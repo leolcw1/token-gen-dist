@@ -1,5 +1,5 @@
 {
-  "version": "1.0.3",
+  "version": "1.0.4",
   "files": {
     "app_mobile.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/app_mobile.py"
   }
