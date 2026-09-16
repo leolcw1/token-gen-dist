@@ -1730,14 +1730,21 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
             time.sleep(1)
 
         if "device" in out:
-            if log_cb: log_cb("🔄 Rotacionando IP 4G no celular (Dados Móveis)...")
+            if log_cb: log_cb("🔄 Rotacionando IP 4G no celular (Modo Avião)...")
             
             # Acorda o celular se estiver em suspensão
             subprocess.run(f"{adb_prefix}shell input keyevent 224", shell=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            # Desliga e religa apenas os dados móveis celulares (mantém USB Tethering ativo e intacto)
-            subprocess.run(f"{adb_prefix}shell svc data disable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(2.0)
+            # Ativa Modo Avião (desconecta rádio da operadora para forçar novo IP)
+            subprocess.run(f"{adb_prefix}shell cmd connectivity airplane-mode enable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f"{adb_prefix}shell settings put global airplane_mode_on 1", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f"{adb_prefix}shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(3.0)
+
+            # Desativa Modo Avião e reativa dados
+            subprocess.run(f"{adb_prefix}shell cmd connectivity airplane-mode disable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f"{adb_prefix}shell settings put global airplane_mode_on 0", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f"{adb_prefix}shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state false", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(f"{adb_prefix}shell svc data enable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
             # Valida restabelecimento da conectividade 4G e resolução DNS
@@ -3449,33 +3456,68 @@ class MobileDeviceWorker:
             time.sleep(0.3)
         return False
 
-    def rotacionar_ip_4g(self):
-        self.log("🔄 Rotacionando IP celular...")
+    def obter_ip_celular(self):
         adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
-        try:
-            subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
-            time.sleep(1.2)
-            subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
-            
-            conectou = self.aguardar_conexao_4g(timeout=8)
-            if not conectou:
-                self.log("⚠️ Dados demoraram a subir. Tentando toggle de Modo Avião como fallback...")
-                subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode enable", shell=True, timeout=5)
-                time.sleep(1.5)
-                subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode disable", shell=True, timeout=5)
-                conectou = self.aguardar_conexao_4g(timeout=15)
-
+        for url in ["https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"]:
             try:
-                res_ip = subprocess.run(f"{adb_cmd} shell curl -s --max-time 2 https://api.ipify.org", shell=True, capture_output=True, text=True, timeout=3)
-                novo_ip = res_ip.stdout.strip()
-                if novo_ip and len(novo_ip) < 45 and "." in novo_ip:
-                    self.log(f"✅ IP celular renovado: {novo_ip}")
-                else:
-                    self.log("✅ IP celular renovado!")
+                res = subprocess.run(f"{adb_cmd} shell curl -s --max-time 2 {url}", shell=True, capture_output=True, text=True, timeout=3)
+                ip = (res.stdout or "").strip()
+                if ip and len(ip.split('.')) == 4:
+                    return ip
             except Exception:
-                self.log("✅ IP celular renovado!")
-        except Exception as e:
-            self.log(f"⚠️ Erro ao rotacionar IP: {e}")
+                pass
+        return None
+
+    def rotacionar_ip_4g(self):
+        self.log("🔄 Rotacionando IP celular via Modo Avião...")
+        adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
+        ip_antigo = self.obter_ip_celular()
+        if ip_antigo:
+            self.log(f"📍 IP atual: {ip_antigo}")
+
+        for tentativa in range(1, 3):
+            try:
+                # 1. Ativa Modo Avião (desconecta rádio da operadora para derrubar o vínculo de IP)
+                subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode enable", shell=True, timeout=5)
+                subprocess.run(f"{adb_cmd} shell settings put global airplane_mode_on 1", shell=True, timeout=5)
+                subprocess.run(f"{adb_cmd} shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true", shell=True, timeout=5)
+                
+                # Aguarda tempo suficiente para a torre/antena liberar a sessão
+                tempo_espera = 3.0 if tentativa == 1 else 4.5
+                time.sleep(tempo_espera)
+
+                # 2. Desativa Modo Avião e garante que os dados estejam ativos
+                subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode disable", shell=True, timeout=5)
+                subprocess.run(f"{adb_cmd} shell settings put global airplane_mode_on 0", shell=True, timeout=5)
+                subprocess.run(f"{adb_cmd} shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state false", shell=True, timeout=5)
+                subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
+
+                # 3. Aguarda restabelecimento da conectividade 4G
+                conectou = self.aguardar_conexao_4g(timeout=12)
+                if not conectou:
+                    time.sleep(1.5)
+                    conectou = self.aguardar_conexao_4g(timeout=8)
+
+                # 4. Confirma se o IP realmente mudou
+                ip_novo = self.obter_ip_celular()
+                if ip_novo:
+                    if ip_antigo and ip_novo == ip_antigo:
+                        self.log(f"⚠️ Operadora manteve o mesmo IP ({ip_novo}) [Tentativa {tentativa}/2]. Forçando novo ciclo...")
+                        continue
+                    else:
+                        if ip_antigo:
+                            self.log(f"✅ IP 4G trocado com sucesso: {ip_antigo} -> {ip_novo}")
+                        else:
+                            self.log(f"✅ IP 4G conectado: {ip_novo}")
+                        return True
+                else:
+                    self.log("✅ IP 4G renovado com sucesso!")
+                    return True
+
+            except Exception as e:
+                self.log(f"⚠️ Erro ao rotacionar IP: {e}")
+
+        return False
 
     def preparar_chrome_mobile(self):
         if not self.running or not self.manager.running:
