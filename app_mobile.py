@@ -4341,35 +4341,53 @@ class MobileAutomationGUI:
             self._drag_start_y = event.y_root
             self._win_start_x = self.root.winfo_x()
             self._win_start_y = self.root.winfo_y()
-            self._drag_disparado = False
+            self._drag_last_time = 0
+            self._drag_pending = False
+            self._drag_target_x = self._win_start_x
+            self._drag_target_y = self._win_start_y
+
+    def _executar_movimento_janela(self):
+        try:
+            self._drag_pending = False
+            hwnd = getattr(self, "hwnd", None)
+            if not hwnd:
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+            SWP_NOACTIVATE = 0x0010
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, self._drag_target_x, self._drag_target_y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+        except Exception:
+            pass
 
     def _arrastar_janela(self, event=None):
         try:
             if not event or not hasattr(self, "_drag_start_x"):
                 return
-            if getattr(self, "_drag_disparado", False):
-                return
-
-            dx = abs(event.x_root - self._drag_start_x)
-            dy = abs(event.y_root - self._drag_start_y)
-            # Limiar de 4px para distinguir clique normal / duplo-clique de arrasto real
-            if dx < 4 and dy < 4:
-                return
-
-            hwnd = getattr(self, "hwnd", None)
-            if not hwnd:
-                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
 
             if getattr(self, "_is_maximized", False):
                 self._toggle_maximizar()
-                new_x = max(0, event.x_root - 120)
-                new_y = max(0, event.y_root - 15)
-                ctypes.windll.user32.SetWindowPos(hwnd, 0, new_x, new_y, 0, 0, 0x0001 | 0x0004 | 0x0010)
+                self._drag_start_x = event.x_root
+                self._drag_start_y = event.y_root
+                self._win_start_x = max(0, event.x_root - 150)
+                self._win_start_y = max(0, event.y_root - 18)
+                self._drag_target_x = self._win_start_x
+                self._drag_target_y = self._win_start_y
+                self._executar_movimento_janela()
+                return
 
-            self._drag_disparado = True
-            # Transfere o controle do movimento para o Desktop Window Manager nativo (240Hz, sem lag no loop Python)
-            ctypes.windll.user32.ReleaseCapture()
-            ctypes.windll.user32.SendMessageW(hwnd, 0x0112, 0xF012, 0)
+            dx = event.x_root - self._drag_start_x
+            dy = event.y_root - self._drag_start_y
+            self._drag_target_x = self._win_start_x + dx
+            self._drag_target_y = self._win_start_y + dy
+
+            now = time.perf_counter()
+            # Throttling fluido a 120 FPS (8.3ms) para zero lag e movimentacao instantanea
+            if (now - getattr(self, "_drag_last_time", 0)) >= 0.008:
+                self._drag_last_time = now
+                self._executar_movimento_janela()
+            elif not getattr(self, "_drag_pending", False):
+                self._drag_pending = True
+                self.root.after(4, self._executar_movimento_janela)
         except Exception:
             pass
 
