@@ -45,6 +45,21 @@ from playwright.sync_api import sync_playwright
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
+    # ── Hot-Reload Dinâmico para Distribuição Compilada (.exe) ───────────────────
+    # Permite que atualizações baixadas pelo updater (.py) sejam executadas diretamente
+    if not os.environ.get("_POKAS_DYNAMIC_LOADED"):
+        _dynamic_script = os.path.join(BASE_DIR, "app_mobile.py")
+        if os.path.exists(_dynamic_script):
+            try:
+                with open(_dynamic_script, "rb") as _f:
+                    _src = _f.read()
+                if len(_src) > 5000:
+                    os.environ["_POKAS_DYNAMIC_LOADED"] = "1"
+                    import runpy
+                    runpy.run_path(_dynamic_script, run_name="__main__")
+                    sys.exit(0)
+            except Exception:
+                pass
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONTAS_DIR = os.path.join(BASE_DIR, "contas")
@@ -6093,18 +6108,28 @@ if __name__ == "__main__":
     app = MobileAutomationGUI(root, license_info={"hwid": hwid, "msg": lic_msg, "key": active_key, "role": role})
 
     def _bg_update_check():
-        time.sleep(3)
-        try:
-            import updater
-            has, data = updater.check_for_updates()
-            if has:
-                ver = data.get("version", "")
-                if updater.apply_update(data):
-                    try:
-                        messagebox.showinfo("Atualização", f"Nova versão v{ver} baixada com sucesso!\nReinicie o aplicativo para aplicar as atualizações.")
-                    except: pass
-        except Exception:
-            pass
+        while True:
+            time.sleep(3)
+            try:
+                import updater
+                has, data = updater.check_for_updates()
+                if has:
+                    ver = data.get("version", "")
+                    if updater.apply_update(data):
+                        try:
+                            resp = messagebox.askyesno(
+                                "Atualização Disponível",
+                                f"Nova versão v{ver} baixada com sucesso!\n\nDeseja reiniciar o aplicativo agora para aplicar as novidades?"
+                            )
+                            if resp:
+                                updater.restart_process()
+                        except Exception:
+                            pass
+                        break
+            except Exception:
+                pass
+            for _ in range(300):
+                time.sleep(1)
     threading.Thread(target=_bg_update_check, daemon=True).start()
 
     root.mainloop()
