@@ -1,8 +1,9 @@
 {
-  "version": "1.0.6",
+  "version": "1.0.7",
   "files": {
     "app_mobile.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/app_mobile.py",
     "hwid_engine.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/hwid_engine.py",
-    "license_gate.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/license_gate.py"
+    "license_gate.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/license_gate.py",
+    "config.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/config.py"
   }
 }
