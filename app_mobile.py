@@ -25,6 +25,16 @@ from datetime import datetime
 from PIL import Image, ImageTk
 import ctypes
 from ctypes import wintypes
+
+# Ativa Per-Monitor DPI Awareness no Windows para escala perfeita em qualquer monitor/notebook
+try:
+    ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+except Exception:
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        pass
+
 import pyautogui
 import pyperclip
 
@@ -4142,8 +4152,8 @@ class MobileAutomationGUI:
         self.license_info = license_info or {}
         lic_txt = f" [{self.license_info.get('msg', 'Ativo')}]" if self.license_info else ""
         self.root.title(f"Pokas Ideia Store v{self.versao_app} — Automação & Resgate de Licenças Rockstar{lic_txt}")
-        self.root.geometry("1060x860")
-        self.root.minsize(960, 760)
+        self.root.geometry("1060x800")
+        self.root.minsize(700, 460)
         self.root.configure(bg=C_BG_MAIN)
         self.root.bind("<Configure>", self._on_window_configure)
         self.root.protocol("WM_DELETE_WINDOW", self._fechar_janela)
@@ -4331,33 +4341,35 @@ class MobileAutomationGUI:
             self._drag_start_y = event.y_root
             self._win_start_x = self.root.winfo_x()
             self._win_start_y = self.root.winfo_y()
+            self._drag_disparado = False
 
     def _arrastar_janela(self, event=None):
         try:
             if not event or not hasattr(self, "_drag_start_x"):
                 return
-            if getattr(self, "_is_maximized", False):
-                self._toggle_maximizar()
-                self._drag_start_x = event.x_root
-                self._drag_start_y = event.y_root
-                self._win_start_x = self.root.winfo_x()
-                self._win_start_y = self.root.winfo_y()
+            if getattr(self, "_drag_disparado", False):
                 return
 
-            dx = event.x_root - self._drag_start_x
-            dy = event.y_root - self._drag_start_y
-            new_x = self._win_start_x + dx
-            new_y = self._win_start_y + dy
+            dx = abs(event.x_root - self._drag_start_x)
+            dy = abs(event.y_root - self._drag_start_y)
+            # Limiar de 4px para distinguir clique normal / duplo-clique de arrasto real
+            if dx < 4 and dy < 4:
+                return
 
             hwnd = getattr(self, "hwnd", None)
             if not hwnd:
                 hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
 
-            # Move direto na Win32 API em pixels fisicos com taxa de atualizacao nativa (sem travamento/sem rastros)
-            SWP_NOSIZE = 0x0001
-            SWP_NOZORDER = 0x0004
-            SWP_NOACTIVATE = 0x0010
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, new_x, new_y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+            if getattr(self, "_is_maximized", False):
+                self._toggle_maximizar()
+                new_x = max(0, event.x_root - 120)
+                new_y = max(0, event.y_root - 15)
+                ctypes.windll.user32.SetWindowPos(hwnd, 0, new_x, new_y, 0, 0, 0x0001 | 0x0004 | 0x0010)
+
+            self._drag_disparado = True
+            # Transfere o controle do movimento para o Desktop Window Manager nativo (240Hz, sem lag no loop Python)
+            ctypes.windll.user32.ReleaseCapture()
+            ctypes.windll.user32.SendMessageW(hwnd, 0x0112, 0xF012, 0)
         except Exception:
             pass
 
@@ -4394,9 +4406,21 @@ class MobileAutomationGUI:
             x = mi.rcWork.left
             y = mi.rcWork.top
             w = mi.rcWork.right - mi.rcWork.left
-            # Folga de seguranca de 4px para garantir que a barra de tarefas nunca seja tapada
-            h = max(200, (mi.rcWork.bottom - mi.rcWork.top) - 4)
+            h = mi.rcWork.bottom - mi.rcWork.top
 
+            # Checa se a barra de tarefas do Windows (Shell_TrayWnd) está no monitor ativo
+            hTaskbar = ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None)
+            if hTaskbar:
+                rcTask = wintypes.RECT()
+                ctypes.windll.user32.GetWindowRect(hTaskbar, ctypes.byref(rcTask))
+                if rcTask.top < mi.rcWork.bottom and rcTask.top > mi.rcWork.top:
+                    h = min(h, rcTask.top - y)
+
+            # Folga de seguranca de 6px para NUNCA tampar ou encostar na barra de tarefas
+            h = max(200, h - 6)
+
+            # Libera minsize temporariamente para permitir encolhimento perfeito em qualquer notebook/escala
+            self.root.minsize(100, 100)
             ctypes.windll.user32.MoveWindow(hwnd, x, y, w, h, True)
             self._is_maximized = True
             if hasattr(self, "btn_title_max_lbl"):
@@ -4412,11 +4436,12 @@ class MobileAutomationGUI:
 
             if getattr(self, "_is_maximized", False):
                 self._is_maximized = False
+                self.root.minsize(700, 460)
                 if hasattr(self, "_prev_rect") and self._prev_rect:
                     px, py, pw, ph = self._prev_rect
                     ctypes.windll.user32.MoveWindow(hwnd, px, py, pw, ph, True)
                 else:
-                    self.root.geometry("1060x860")
+                    self.root.geometry("1060x800")
                 if hasattr(self, "btn_title_max_lbl"):
                     self.btn_title_max_lbl.config(text="▢")
             else:
