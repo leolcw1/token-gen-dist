@@ -94,6 +94,22 @@ def apply_update(remote_data: dict) -> bool:
             temp_files.append((tmp_path, BASE_DIR / filename))
 
         for tmp_path, final_path in temp_files:
+            if final_path.name.lower().endswith(".exe"):
+                new_exe = BASE_DIR / f"{final_path.name}.new"
+                try:
+                    if new_exe.exists(): new_exe.unlink()
+                except Exception:
+                    pass
+                try:
+                    tmp_path.replace(new_exe)
+                except Exception:
+                    try:
+                        import shutil
+                        shutil.move(str(tmp_path), str(new_exe))
+                    except Exception:
+                        pass
+                continue
+
             try:
                 if final_path.exists():
                     final_path.unlink()
@@ -122,9 +138,25 @@ def apply_update(remote_data: dict) -> bool:
 
 def restart_process():
     """
-    Reinicia o aplicativo (suporta executável congelado .exe e script .py).
+    Reinicia o aplicativo (suporta substituição segura de executável congelado .exe e script .py).
     """
     try:
+        new_exe = BASE_DIR / "PokasStoreMobile.exe.new"
+        cur_exe = BASE_DIR / "PokasStoreMobile.exe"
+        if new_exe.exists():
+            bat_path = BASE_DIR / "_restart_updater.bat"
+            bat_script = f"""@echo off
+timeout /t 1 /nobreak >nul
+move /y "{new_exe}" "{cur_exe}" >nul 2>&1
+start "" "{cur_exe}"
+del "%~f0"
+"""
+            with open(bat_path, "w", encoding="utf-8") as f:
+                f.write(bat_script)
+            import subprocess
+            subprocess.Popen(["cmd.exe", "/c", str(bat_path)])
+            os._exit(0)
+
         import subprocess
         if getattr(sys, 'frozen', False):
             subprocess.Popen([sys.executable] + sys.argv[1:])
@@ -132,5 +164,5 @@ def restart_process():
             subprocess.Popen([sys.executable] + sys.argv)
         os._exit(0)
     except Exception:
-        python_exe = sys.executable
+        os._exit(0)
         os.execl(python_exe, python_exe, *sys.argv)
