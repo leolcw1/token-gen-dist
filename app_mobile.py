@@ -5300,6 +5300,7 @@ class MobileAutomationGUI:
 
         ttk.Button(btn_box, text="🔄 ATUALIZAR LISTA", style="Secondary.TButton", command=self._carregar_licencas_tabela).pack(side="left", padx=3)
         ttk.Button(btn_box, text="📋 COPIAR CHAVE", style="Secondary.TButton", command=self._acao_copiar_chave_selecionada).pack(side="left", padx=3)
+        ttk.Button(btn_box, text="🔓 RESETAR HWID", style="Secondary.TButton", command=self._acao_resetar_hwid_gui).pack(side="left", padx=3)
         ttk.Button(btn_box, text="🚫 REVOGAR CHAVE", style="Danger.TButton", command=self._acao_revogar_chave_gui).pack(side="left", padx=3)
         ttk.Button(btn_box, text="🧹 LIMPAR REVOGADAS", style="Secondary.TButton", command=self._acao_limpar_revogadas_gui).pack(side="left", padx=(3, 0))
 
@@ -5559,6 +5560,48 @@ class MobileAutomationGUI:
             self.root.clipboard_clear()
             self.root.clipboard_append(key)
             self.lbl_lic_tabela_info.config(text=f"📋 Chave {key} copiada!", fg=C_CYAN)
+
+    def _acao_resetar_hwid_gui(self):
+        sel = self.tree_licencas.selection()
+        if not sel:
+            messagebox.showinfo("Aviso", "Selecione na tabela a licença cujo HWID deseja resetar/desvincular.")
+            return
+        vals = self.tree_licencas.item(sel[0], "values")
+        if not vals or len(vals) < 4:
+            return
+        key = vals[2]
+        operador = vals[3]
+        hwid_atual = vals[6] if len(vals) > 6 else ""
+
+        if not hwid_atual or "Aguardando" in hwid_atual:
+            messagebox.showinfo("Aviso", f"A chave {key} ainda não possui nenhum HWID vinculado.")
+            return
+
+        confirmar = messagebox.askyesno(
+            "Desvincular HWID",
+            f"Deseja desvincular o computador atual ({hwid_atual}) da chave:\n\n{key} ({operador})?\n\nApós o reset, a chave poderá ser ativada em outro computador (ou no mesmo computador caso o hardware tenha mudado)."
+        )
+        if not confirmar:
+            return
+
+        self.lbl_lic_tabela_info.config(text=f"⏳ Resetando HWID de {key} no Cloudflare...", fg=C_AMBER)
+
+        def _worker():
+            res = self._fazer_requisicao_admin("/admin/reset-hwid", method="POST", body={"key": key})
+
+            def _apply():
+                if res.get("success"):
+                    msg = res.get("message", "HWID desvinculado com sucesso!")
+                    self.lbl_lic_tabela_info.config(text=f"🔓 {msg}", fg=C_GREEN)
+                    messagebox.showinfo("Sucesso", f"O HWID vinculado à chave {key} foi removido com sucesso!\n\nAgora o subordinado pode entrar com a chave normalmente.")
+                    self._carregar_licencas_tabela()
+                else:
+                    erro = res.get("error", "Erro ao resetar HWID.")
+                    messagebox.showerror("Erro", f"Não foi possível resetar o HWID:\n{erro}\n\nCertifique-se de que o cf_worker.js atualizado foi publicado no Cloudflare.")
+
+            self.root.after(0, _apply)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _acao_revogar_chave_gui(self):
         sel = self.tree_licencas.selection()
