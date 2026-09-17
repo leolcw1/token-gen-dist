@@ -35,7 +35,7 @@ def _get_headers() -> dict:
 def get_local_version() -> str:
     if LOCAL_VERSION_FILE.exists():
         try:
-            with open(LOCAL_VERSION_FILE, "r", encoding="utf-8") as f:
+            with open(LOCAL_VERSION_FILE, "r", encoding="utf-8-sig") as f:
                 return json.load(f).get("version", CURRENT_FALLBACK_VERSION)
         except Exception:
             pass
