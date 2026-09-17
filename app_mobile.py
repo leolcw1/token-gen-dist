@@ -4330,14 +4330,29 @@ class MobileAutomationGUI:
             pass
 
     def _iniciar_arrasto_janela(self, event=None):
+        if event:
+            self._drag_start_x = event.x_root
+            self._drag_start_y = event.y_root
+            self._win_start_x = self.root.winfo_x()
+            self._win_start_y = self.root.winfo_y()
+
+    def _arrastar_janela(self, event=None):
         try:
-            hwnd = getattr(self, "hwnd", None)
-            if not hwnd:
-                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+            if not event or not hasattr(self, "_drag_start_x"):
+                return
             if getattr(self, "_is_maximized", False):
                 self._toggle_maximizar()
-            ctypes.windll.user32.ReleaseCapture()
-            ctypes.windll.user32.SendMessageW(hwnd, 0x0112, 0xF012, 0)
+                self._drag_start_x = event.x_root
+                self._drag_start_y = event.y_root
+                self._win_start_x = self.root.winfo_x()
+                self._win_start_y = self.root.winfo_y()
+                return
+
+            dx = event.x_root - self._drag_start_x
+            dy = event.y_root - self._drag_start_y
+            new_x = self._win_start_x + dx
+            new_y = self._win_start_y + dy
+            self.root.geometry(f"+{new_x}+{new_y}")
         except Exception:
             pass
 
@@ -4483,16 +4498,17 @@ class MobileAutomationGUI:
         )
         self.lbl_title_desc.pack(side="left")
         self.lbl_title_desc.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
-        self.lbl_title_desc.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
-
-        # 3. ÁREA DE ARRASTO (Preenche todo o centro da barra livre)
+        # 3. Área de arrasto central
         drag_area = tk.Frame(self.custom_titlebar, bg="#050608")
         drag_area.pack(side="left", fill="both", expand=True)
-        drag_area.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
-        drag_area.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
-        left_box.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
-        self.custom_titlebar.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
-        self.custom_titlebar.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
+
+        for w in [self.custom_titlebar, drag_area, left_box, lbl_brand, dot_status, lbl_ver, self.lbl_title_desc]:
+            w.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+            w.bind("<B1-Motion>", self._arrastar_janela)
+            w.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
+        if hasattr(self, "_app_icon_photo") and self._app_icon_photo:
+            lbl_ico.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+            lbl_ico.bind("<B1-Motion>", self._arrastar_janela)
 
     def _construir_interface(self):
         self._construir_custom_titlebar()
