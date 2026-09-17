@@ -4076,6 +4076,46 @@ C_BLUE           = "#0EA5E9"   # Azul 4G
 C_INDIGO         = "#6366F1"   # Roxo Local
 C_RED            = "#EF4444"   # Vermelho Perigo
 
+def _obter_versao_app():
+    try:
+        import updater
+        return updater.get_local_version()
+    except Exception:
+        pass
+    try:
+        vpath = os.path.join(BASE_DIR, "version.json")
+        if os.path.exists(vpath):
+            with open(vpath, "r", encoding="utf-8") as f:
+                return json.load(f).get("version", "1.0.5")
+    except Exception:
+        pass
+    return "1.0.5"
+
+def aplicar_tema_escuro_janela(root):
+    """
+    Elimina a barra branca padrão do Windows e ativa o DWM Immersive Dark Mode,
+    integrando a barra de título perfeitamente ao tema escuro do aplicativo.
+    """
+    try:
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        if hwnd == 0:
+            hwnd = root.winfo_id()
+        val = ctypes.c_int(1)
+        res = ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val), ctypes.sizeof(val))
+        if res != 0:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(val), ctypes.sizeof(val))
+        try:
+            cor_caption = ctypes.c_uint32(0x00170E0B)  # #0B0E17 em COLORREF BGR
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cor_caption), ctypes.sizeof(cor_caption))
+            cor_texto = ctypes.c_uint32(0x00FFFFFF)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 36, ctypes.byref(cor_texto), ctypes.sizeof(cor_texto))
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
 # ============================================================================
 # INTERFACE GRÁFICA MODERNA COM SIDEBAR & GERENCIADOR
 # ============================================================================
@@ -4083,12 +4123,16 @@ C_RED            = "#EF4444"   # Vermelho Perigo
 class MobileAutomationGUI:
     def __init__(self, root, license_info=None):
         self.root = root
+        self.versao_app = _obter_versao_app()
         self.license_info = license_info or {}
         lic_txt = f" [{self.license_info.get('msg', 'Ativo')}]" if self.license_info else ""
-        self.root.title(f"Pokas Ideia Store — Automação & Resgate de Licenças Rockstar{lic_txt}")
+        self.root.title(f"Pokas Ideia Store v{self.versao_app} — Automação & Resgate de Licenças Rockstar{lic_txt}")
         self.root.geometry("1060x860")
         self.root.minsize(960, 760)
         self.root.configure(bg=C_BG_MAIN)
+        aplicar_tema_escuro_janela(self.root)
+        self.root.after(50, lambda: aplicar_tema_escuro_janela(self.root))
+        self.root.after(200, lambda: aplicar_tema_escuro_janela(self.root))
 
         # Configurar Ícone Nativo do Aplicativo (Janela + Barra de Tarefas)
         ico_path = os.path.join(BASE_DIR, "app_icon.ico")
@@ -4298,6 +4342,13 @@ class MobileAutomationGUI:
         badge_role_inner.pack()
         tk.Label(badge_role_inner, text=role_text, font=("Segoe UI", 7, "bold"), fg=role_color, bg=role_bg).pack()
 
+        # Badge de Versão embutido na Sidebar
+        badge_ver_border = tk.Frame(logo_box, bg="#1E293B", padx=1, pady=1)
+        badge_ver_border.pack(pady=(4, 0))
+        badge_ver_inner = tk.Frame(badge_ver_border, bg="#070A12", padx=6, pady=2)
+        badge_ver_inner.pack()
+        tk.Label(badge_ver_inner, text=f"v{self.versao_app}", font=("Consolas", 8, "bold"), fg=C_CYAN, bg="#070A12").pack()
+
         # Botões de Navegação com Indicador Luminoso
         self.nav_home_frame = self._criar_nav_btn(self.sidebar, "🏠", "Automação", lambda: self._trocar_view("home"))
         self.nav_home_frame.pack(pady=(0, 10), fill="x", padx=8)
@@ -4417,6 +4468,9 @@ class MobileAutomationGUI:
 
         self.lbl_status_a9 = tk.Label(status_dev_box, text="● Tab A9+: Verificando...", font=("Segoe UI", 8, "bold"), fg=C_TEXT_MUTED, bg=C_BG_HEADER)
         self.lbl_status_a9.pack(side="left")
+
+        self.lbl_badge_versao_topo = self._criar_badge_moderno(status_dev_box, f"🚀 v{self.versao_app}", C_CYAN, "#0C1B26", "#0E2B3D")
+        self.lbl_badge_versao_topo.pack(side="left", padx=(12, 0))
 
         self.lbl_status_device = self.lbl_status_redmi  # alias para compatibilidade
 
