@@ -4306,7 +4306,7 @@ class MobileAutomationGUI:
             new_style = (style & ~WS_CAPTION) | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, new_style)
 
-            # Atributos DWM: elimina totalmente a listra branca de redimensionamento no Windows 10/11
+            # Atributos DWM: elimina totalmente a listra branca sem quebrar o canvas GDI
             dark_val = ctypes.c_int(1)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark_val), 4) # DWMWA_USE_IMMERSIVE_DARK_MODE
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(dark_val), 4) # Fallback Win10
@@ -4314,12 +4314,6 @@ class MobileAutomationGUI:
             cor_bg = ctypes.c_uint32(0x00080605) # BGR para #050608 (Dark Obsidian)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(cor_bg), 4) # DWMWA_BORDER_COLOR (Win11)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cor_bg), 4) # DWMWA_CAPTION_COLOR (Win11)
-
-            class MARGINS(ctypes.Structure):
-                _fields_ = [('cxLeftWidth', ctypes.c_int), ('cxRightWidth', ctypes.c_int),
-                            ('cyTopHeight', ctypes.c_int), ('cyBottomHeight', ctypes.c_int)]
-            margins = MARGINS(0, 0, 1, 0)
-            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
 
             SWP_FRAMECHANGED = 0x0020
             SWP_NOMOVE = 0x0002
@@ -4352,7 +4346,16 @@ class MobileAutomationGUI:
             dy = event.y_root - self._drag_start_y
             new_x = self._win_start_x + dx
             new_y = self._win_start_y + dy
-            self.root.geometry(f"+{new_x}+{new_y}")
+
+            hwnd = getattr(self, "hwnd", None)
+            if not hwnd:
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+
+            # Move direto na Win32 API em pixels fisicos com taxa de atualizacao nativa (sem travamento/sem rastros)
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+            SWP_NOACTIVATE = 0x0010
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, new_x, new_y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
         except Exception:
             pass
 
