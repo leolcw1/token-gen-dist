@@ -94,19 +94,25 @@ def apply_update(remote_data: dict) -> bool:
             temp_files.append((tmp_path, BASE_DIR / filename))
 
         for tmp_path, final_path in temp_files:
-            if final_path.exists():
-                old_path = BASE_DIR / f"{final_path.name}.old"
+            try:
+                if final_path.exists():
+                    final_path.unlink()
+            except Exception:
+                pass
+            try:
+                tmp_path.replace(final_path)
+            except Exception:
                 try:
-                    if old_path.exists(): old_path.unlink()
-                    final_path.rename(old_path)
-                except Exception:
-                    pass
-                try:
-                    if final_path.exists(): final_path.unlink()
+                    import shutil
+                    shutil.move(str(tmp_path), str(final_path))
                 except Exception:
                     pass
 
-            tmp_path.rename(final_path)
+            # Limpa qualquer resíduo .old
+            old_f = BASE_DIR / f"{final_path.name}.old"
+            if old_f.exists():
+                try: old_f.unlink()
+                except Exception: pass
 
         set_local_version(remote_data.get("version", "1.0.0"))
         return True
