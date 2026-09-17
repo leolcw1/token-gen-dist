@@ -6294,28 +6294,28 @@ if __name__ == "__main__":
     app = MobileAutomationGUI(root, license_info={"hwid": hwid, "msg": lic_msg, "key": active_key, "role": role})
 
     def _bg_update_check():
-        while True:
-            time.sleep(3)
-            try:
-                import updater
-                has, data = updater.check_for_updates()
-                if has:
-                    ver = data.get("version", "")
-                    if updater.apply_update(data):
+        time.sleep(4)
+        try:
+            import updater
+            has, data = updater.check_for_updates()
+            if has:
+                ver = data.get("version", "")
+                if updater.apply_update(data):
+                    def _notificar():
                         try:
                             resp = messagebox.askyesno(
                                 "Atualização Disponível",
-                                f"Nova versão v{ver} baixada com sucesso!\n\nDeseja reiniciar o aplicativo agora para aplicar as novidades?"
+                                f"Uma nova versão (v{ver}) foi baixada com sucesso!\n\nDeseja reiniciar o aplicativo agora para aplicar as novidades?",
+                                parent=root
                             )
                             if resp:
                                 updater.restart_process()
                         except Exception:
                             pass
-                        break
-            except Exception:
-                pass
-            for _ in range(300):
-                time.sleep(1)
+                    root.after(100, _notificar)
+        except Exception:
+            pass
+
     threading.Thread(target=_bg_update_check, daemon=True).start()
 
     root.mainloop()
