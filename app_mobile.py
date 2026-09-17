@@ -4145,6 +4145,7 @@ class MobileAutomationGUI:
         self.root.geometry("1060x860")
         self.root.minsize(960, 760)
         self.root.configure(bg=C_BG_MAIN)
+        self.root.bind("<Configure>", self._on_window_configure)
         self._ativar_janela_sem_borda_nativa()
         self.root.after(20, self._ativar_janela_sem_borda_nativa)
         self.root.after(150, self._ativar_janela_sem_borda_nativa)
@@ -4369,6 +4370,39 @@ class MobileAutomationGUI:
             try: self.root.iconify()
             except Exception: pass
 
+    def _aplicar_maximizacao_workarea(self):
+        try:
+            hwnd = getattr(self, "hwnd", None)
+            if not hwnd:
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+
+            out = wintypes.RECT()
+            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(out))
+            if not getattr(self, "_is_maximized", False):
+                self._prev_rect = (out.left, out.top, out.right - out.left, out.bottom - out.top)
+
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [('cbSize', wintypes.DWORD), ('rcMonitor', wintypes.RECT),
+                            ('rcWork', wintypes.RECT), ('dwFlags', wintypes.DWORD)]
+
+            mi = MONITORINFO()
+            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            hMon = ctypes.windll.user32.MonitorFromWindow(hwnd, 2) # MONITOR_DEFAULTTONEAREST = 2
+            ctypes.windll.user32.GetMonitorInfoW(hMon, ctypes.byref(mi))
+
+            x = mi.rcWork.left
+            y = mi.rcWork.top
+            w = mi.rcWork.right - mi.rcWork.left
+            # Folga de seguranca de 4px para garantir que a barra de tarefas nunca seja tapada
+            h = max(200, (mi.rcWork.bottom - mi.rcWork.top) - 4)
+
+            ctypes.windll.user32.MoveWindow(hwnd, x, y, w, h, True)
+            self._is_maximized = True
+            if hasattr(self, "btn_title_max_lbl"):
+                self.btn_title_max_lbl.config(text="❐")
+        except Exception:
+            pass
+
     def _toggle_maximizar(self):
         try:
             hwnd = getattr(self, "hwnd", None)
@@ -4385,20 +4419,16 @@ class MobileAutomationGUI:
                 if hasattr(self, "btn_title_max_lbl"):
                     self.btn_title_max_lbl.config(text="▢")
             else:
-                out = wintypes.RECT()
-                ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(out))
-                self._prev_rect = (out.left, out.top, out.right - out.left, out.bottom - out.top)
+                self._aplicar_maximizacao_workarea()
+        except Exception:
+            pass
 
-                rect = wintypes.RECT()
-                # SPI_GETWORKAREA = 0x0030: recupera a area livre da tela descontando a barra de tarefas do Windows
-                ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
-                w = rect.right - rect.left
-                h = rect.bottom - rect.top
-                # MoveWindow garante limites fisicos exatos sem que o Tkinter adicione altura de bordas sobrepondo a taskbar
-                ctypes.windll.user32.MoveWindow(hwnd, rect.left, rect.top, w, h, True)
-                self._is_maximized = True
-                if hasattr(self, "btn_title_max_lbl"):
-                    self.btn_title_max_lbl.config(text="❐")
+    def _on_window_configure(self, event):
+        try:
+            if event.widget == self.root:
+                if self.root.state() == "zoomed":
+                    self.root.state("normal")
+                    self._aplicar_maximizacao_workarea()
         except Exception:
             pass
 
