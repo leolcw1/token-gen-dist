@@ -4146,6 +4146,7 @@ class MobileAutomationGUI:
         self.root.minsize(960, 760)
         self.root.configure(bg=C_BG_MAIN)
         self.root.bind("<Configure>", self._on_window_configure)
+        self.root.protocol("WM_DELETE_WINDOW", self._fechar_janela)
         self._ativar_janela_sem_borda_nativa()
         self.root.after(20, self._ativar_janela_sem_borda_nativa)
         self.root.after(150, self._ativar_janela_sem_borda_nativa)
