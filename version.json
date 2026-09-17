@@ -1,10 +1,12 @@
 {
-  "version": "1.0.22",
+  "version": "1.0.23",
   "files": {
     "app_mobile.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/app_mobile.py",
     "hwid_engine.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/hwid_engine.py",
     "license_gate.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/license_gate.py",
     "config.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/config.py",
-    "updater.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/updater.py"
+    "updater.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/updater.py",
+    "atualizar.ps1": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/atualizar.ps1",
+    "PokasStoreMobile.exe": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/PokasStoreMobile.exe"
   }
 }
