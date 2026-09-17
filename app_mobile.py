@@ -4331,19 +4331,35 @@ class MobileAutomationGUI:
             if not hwnd:
                 hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
                 if hwnd == 0: hwnd = self.root.winfo_id()
-            ctypes.windll.user32.ShowWindow(hwnd, 6)
+            ctypes.windll.user32.ShowWindow(hwnd, 6) # SW_MINIMIZE = 6
         except Exception:
             try: self.root.iconify()
             except Exception: pass
 
     def _toggle_maximizar(self):
         try:
-            if self.root.state() == "zoomed":
-                self.root.state("normal")
-                self.btn_title_max.config(text="▢")
+            if getattr(self, "_is_maximized", False):
+                self._is_maximized = False
+                if hasattr(self, "_prev_geom") and self._prev_geom:
+                    self.root.geometry(self._prev_geom)
+                else:
+                    self.root.geometry("1280x760")
+                if hasattr(self, "btn_title_max_lbl"):
+                    self.btn_title_max_lbl.config(text="▢")
             else:
-                self.root.state("zoomed")
-                self.btn_title_max.config(text="❐")
+                self._prev_geom = self.root.geometry()
+                class RECT(ctypes.Structure):
+                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                rect = RECT()
+                # SPI_GETWORKAREA = 0x0030: recupera as coordenadas livres da tela descontando a barra de tarefas do Windows
+                ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
+                w = rect.right - rect.left
+                h = rect.bottom - rect.top
+                self.root.geometry(f"{w}x{h}+{rect.left}+{rect.top}")
+                self._is_maximized = True
+                if hasattr(self, "btn_title_max_lbl"):
+                    self.btn_title_max_lbl.config(text="❐")
         except Exception:
             pass
 
@@ -4355,69 +4371,107 @@ class MobileAutomationGUI:
         os._exit(0)
 
     def _construir_custom_titlebar(self):
-        self.custom_titlebar = tk.Frame(self.root, bg="#07090E", height=32)
+        # Header Topo Unificado inspirado no layout Stealth / Ninox
+        self.custom_titlebar = tk.Frame(self.root, bg="#050608", height=36)
         self.custom_titlebar.pack(side="top", fill="x")
         self.custom_titlebar.pack_propagate(False)
 
-        tk.Frame(self.root, bg="#161B26", height=1).pack(side="top", fill="x")
+        # Divisor sutil inferior
+        tk.Frame(self.root, bg="#10141D", height=1).pack(side="top", fill="x")
 
-        left_box = tk.Frame(self.custom_titlebar, bg="#07090E")
+        # 1. BOTOES DA JANELA NO CANTO DIREITO (Empacotados primeiro para NUNCA serem empurrados para fora em telas menores)
+        btn_box = tk.Frame(self.custom_titlebar, bg="#050608")
+        btn_box.pack(side="right", fill="y", padx=(0, 10))
+
+        # Estilo dos botões da janela inspirado no Ninox (cards discretos com borda e hover)
+        def _criar_win_ctrl(parent, icone, cmd, hover_bg="#161B26", hover_fg="#00F0FF", is_close=False):
+            card = tk.Frame(parent, bg="#111622", padx=1, pady=1)
+            card.pack(side="left", padx=3, pady=6)
+            inner = tk.Frame(card, bg="#080B10", padx=9, pady=2, cursor="hand2")
+            inner.pack()
+            lbl = tk.Label(inner, text=icone, font=("Segoe UI", 9, "bold"), fg="#7E8B9F", bg="#080B10", cursor="hand2")
+            lbl.pack()
+
+            def on_enter(e):
+                bg = "#E81123" if is_close else hover_bg
+                fg = "#FFFFFF" if is_close else hover_fg
+                card.config(bg="#FF3344" if is_close else "#00F0FF")
+                inner.config(bg=bg)
+                lbl.config(bg=bg, fg=fg)
+
+            def on_leave(e):
+                card.config(bg="#111622")
+                inner.config(bg="#080B10")
+                lbl.config(bg="#080B10", fg="#7E8B9F")
+
+            for w in [card, inner, lbl]:
+                w.bind("<Enter>", on_enter)
+                w.bind("<Leave>", on_leave)
+                w.bind("<Button-1>", lambda e: cmd())
+            return lbl
+
+        self.btn_title_min_lbl = _criar_win_ctrl(btn_box, "—", self._minimizar_janela)
+        self.btn_title_max_lbl = _criar_win_ctrl(btn_box, "▢", self._toggle_maximizar)
+        self.btn_title_close_lbl = _criar_win_ctrl(btn_box, "✕", self._fechar_janela, is_close=True)
+
+        # 2. LADO ESQUERDO: Branding + Status Dot + Título + Versão
+        left_box = tk.Frame(self.custom_titlebar, bg="#050608")
         left_box.pack(side="left", fill="y", padx=(10, 0))
 
         if hasattr(self, "_app_icon_photo") and self._app_icon_photo:
-            lbl_ico = tk.Label(left_box, image=self._app_icon_photo, bg="#07090E")
+            lbl_ico = tk.Label(left_box, image=self._app_icon_photo, bg="#050608")
             lbl_ico.pack(side="left", padx=(0, 6))
             lbl_ico.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
 
-        lic_txt = f" [{self.license_info.get('msg', 'Ativo')}]" if self.license_info else ""
-        self.lbl_title_text = tk.Label(
+        # Título estilo Ninox Solver
+        lbl_brand = tk.Label(
             left_box,
-            text=f"Pokas Ideia Store v{self.versao_app} — Automação & Resgate de Licenças Rockstar{lic_txt}",
-            font=("Segoe UI", 9, "bold"),
-            fg="#F1F5F9",
-            bg="#07090E"
+            text="Pokas Store",
+            font=("Segoe UI", 10, "bold"),
+            fg="#F8FAFC",
+            bg="#050608"
         )
-        self.lbl_title_text.pack(side="left")
-        self.lbl_title_text.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
-        self.lbl_title_text.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
+        lbl_brand.pack(side="left", padx=(0, 4))
+        lbl_brand.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+        lbl_brand.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
 
-        drag_area = tk.Frame(self.custom_titlebar, bg="#07090E")
+        # Dot luminoso verde status ativo
+        dot_status = tk.Label(left_box, text="●", font=("Segoe UI", 8), fg="#00FF66", bg="#050608")
+        dot_status.pack(side="left", padx=(0, 8))
+        dot_status.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+
+        # Versão tag sutil
+        lbl_ver = tk.Label(
+            left_box,
+            text=f"v{self.versao_app}",
+            font=("Consolas", 8, "bold"),
+            fg="#576170",
+            bg="#050608"
+        )
+        lbl_ver.pack(side="left", padx=(0, 10))
+        lbl_ver.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+
+        # Subtítulo descritivo com corte automático em telas menores
+        lic_txt = f" [{self.license_info.get('msg', 'Licença Ativa')}]" if self.license_info else ""
+        self.lbl_title_desc = tk.Label(
+            left_box,
+            text=f"› Automação & Resgate Rockstar{lic_txt}",
+            font=("Segoe UI", 9),
+            fg="#72829B",
+            bg="#050608"
+        )
+        self.lbl_title_desc.pack(side="left")
+        self.lbl_title_desc.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+        self.lbl_title_desc.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
+
+        # 3. ÁREA DE ARRASTO (Preenche todo o centro da barra livre)
+        drag_area = tk.Frame(self.custom_titlebar, bg="#050608")
         drag_area.pack(side="left", fill="both", expand=True)
         drag_area.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
         drag_area.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
         left_box.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
         self.custom_titlebar.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
         self.custom_titlebar.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
-
-        btn_box = tk.Frame(self.custom_titlebar, bg="#07090E")
-        btn_box.pack(side="right", fill="y")
-
-        self.btn_title_min = tk.Label(
-            btn_box, text="—", font=("Segoe UI", 10),
-            fg="#94A3B8", bg="#07090E", width=5, cursor="hand2"
-        )
-        self.btn_title_min.pack(side="left", fill="y")
-        self.btn_title_min.bind("<Button-1>", lambda e: self._minimizar_janela())
-        self.btn_title_min.bind("<Enter>", lambda e: self.btn_title_min.config(bg="#1E2536", fg="#FFFFFF"))
-        self.btn_title_min.bind("<Leave>", lambda e: self.btn_title_min.config(bg="#07090E", fg="#94A3B8"))
-
-        self.btn_title_max = tk.Label(
-            btn_box, text="▢", font=("Segoe UI", 10),
-            fg="#94A3B8", bg="#07090E", width=5, cursor="hand2"
-        )
-        self.btn_title_max.pack(side="left", fill="y")
-        self.btn_title_max.bind("<Button-1>", lambda e: self._toggle_maximizar())
-        self.btn_title_max.bind("<Enter>", lambda e: self.btn_title_max.config(bg="#1E2536", fg="#FFFFFF"))
-        self.btn_title_max.bind("<Leave>", lambda e: self.btn_title_max.config(bg="#07090E", fg="#94A3B8"))
-
-        self.btn_title_close = tk.Label(
-            btn_box, text="✕", font=("Segoe UI", 10),
-            fg="#94A3B8", bg="#07090E", width=6, cursor="hand2"
-        )
-        self.btn_title_close.pack(side="left", fill="y")
-        self.btn_title_close.bind("<Button-1>", lambda e: self._fechar_janela())
-        self.btn_title_close.bind("<Enter>", lambda e: self.btn_title_close.config(bg="#E81123", fg="#FFFFFF"))
-        self.btn_title_close.bind("<Leave>", lambda e: self.btn_title_close.config(bg="#07090E", fg="#94A3B8"))
 
     def _construir_interface(self):
         self._construir_custom_titlebar()
@@ -4589,6 +4643,18 @@ class MobileAutomationGUI:
         header_bar.pack(fill="x")
         tk.Frame(self.content_area, bg=C_BORDER, height=1).pack(fill="x")
 
+        status_dev_box = tk.Frame(header_bar, bg=C_BG_HEADER)
+        status_dev_box.pack(side="right")
+
+        self.lbl_status_redmi = tk.Label(status_dev_box, text="● Redmi: Verificando...", font=("Segoe UI", 8, "bold"), fg=C_TEXT_MUTED, bg=C_BG_HEADER)
+        self.lbl_status_redmi.pack(side="left", padx=(0, 10))
+
+        self.lbl_status_a9 = tk.Label(status_dev_box, text="● Tab A9+: Verificando...", font=("Segoe UI", 8, "bold"), fg=C_TEXT_MUTED, bg=C_BG_HEADER)
+        self.lbl_status_a9.pack(side="left")
+
+        self.lbl_badge_versao_topo = self._criar_badge_moderno(status_dev_box, f"🚀 v{self.versao_app}", C_CYAN, "#0C1B26", "#0E2B3D")
+        self.lbl_badge_versao_topo.pack(side="left", padx=(12, 0))
+
         badges_frame = tk.Frame(header_bar, bg=C_BG_HEADER)
         badges_frame.pack(side="left")
 
@@ -4606,18 +4672,6 @@ class MobileAutomationGUI:
 
         self.lbl_badge_prontas = self._criar_badge_moderno(badges_frame, "🏆 Prontas: 0", C_PURPLE, "#1E1430", "#301F4E")
         self.lbl_badge_prontas.pack(side="left", padx=4)
-
-        status_dev_box = tk.Frame(header_bar, bg=C_BG_HEADER)
-        status_dev_box.pack(side="right")
-
-        self.lbl_status_redmi = tk.Label(status_dev_box, text="● Redmi: Verificando...", font=("Segoe UI", 8, "bold"), fg=C_TEXT_MUTED, bg=C_BG_HEADER)
-        self.lbl_status_redmi.pack(side="left", padx=(0, 10))
-
-        self.lbl_status_a9 = tk.Label(status_dev_box, text="● Tab A9+: Verificando...", font=("Segoe UI", 8, "bold"), fg=C_TEXT_MUTED, bg=C_BG_HEADER)
-        self.lbl_status_a9.pack(side="left")
-
-        self.lbl_badge_versao_topo = self._criar_badge_moderno(status_dev_box, f"🚀 v{self.versao_app}", C_CYAN, "#0C1B26", "#0E2B3D")
-        self.lbl_badge_versao_topo.pack(side="left", padx=(12, 0))
 
         self.lbl_status_device = self.lbl_status_redmi  # alias para compatibilidade
 
