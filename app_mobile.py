@@ -4145,9 +4145,9 @@ class MobileAutomationGUI:
         self.root.geometry("1060x860")
         self.root.minsize(960, 760)
         self.root.configure(bg=C_BG_MAIN)
-        aplicar_tema_escuro_janela(self.root)
-        self.root.after(50, lambda: aplicar_tema_escuro_janela(self.root))
-        self.root.after(200, lambda: aplicar_tema_escuro_janela(self.root))
+        self._ativar_janela_sem_borda_nativa()
+        self.root.after(20, self._ativar_janela_sem_borda_nativa)
+        self.root.after(150, self._ativar_janela_sem_borda_nativa)
 
         # Configurar Ícone Nativo do Aplicativo (Janela + Barra de Tarefas)
         ico_path = os.path.join(BASE_DIR, "app_icon.ico")
@@ -4288,7 +4288,139 @@ class MobileAutomationGUI:
             foreground=[("selected", "#FFFFFF")]
         )
 
+    def _ativar_janela_sem_borda_nativa(self):
+        try:
+            self.root.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            if hwnd == 0:
+                hwnd = self.root.winfo_id()
+            self.hwnd = hwnd
+
+            GWL_STYLE = -16
+            WS_CAPTION = 0x00C00000
+            WS_THICKFRAME = 0x00040000
+            WS_MINIMIZEBOX = 0x00020000
+            WS_MAXIMIZEBOX = 0x00010000
+
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+            new_style = (style & ~WS_CAPTION) | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, new_style)
+
+            SWP_FRAMECHANGED = 0x0020
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER)
+        except Exception:
+            pass
+
+    def _iniciar_arrasto_janela(self, event=None):
+        try:
+            hwnd = getattr(self, "hwnd", None)
+            if not hwnd:
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+                if hwnd == 0: hwnd = self.root.winfo_id()
+            ctypes.windll.user32.ReleaseCapture()
+            ctypes.windll.user32.SendMessageW(hwnd, 0x0112, 0xF012, 0)
+        except Exception:
+            pass
+
+    def _minimizar_janela(self):
+        try:
+            hwnd = getattr(self, "hwnd", None)
+            if not hwnd:
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+                if hwnd == 0: hwnd = self.root.winfo_id()
+            ctypes.windll.user32.ShowWindow(hwnd, 6)
+        except Exception:
+            try: self.root.iconify()
+            except Exception: pass
+
+    def _toggle_maximizar(self):
+        try:
+            if self.root.state() == "zoomed":
+                self.root.state("normal")
+                self.btn_title_max.config(text="▢")
+            else:
+                self.root.state("zoomed")
+                self.btn_title_max.config(text="❐")
+        except Exception:
+            pass
+
+    def _fechar_janela(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
+    def _construir_custom_titlebar(self):
+        self.custom_titlebar = tk.Frame(self.root, bg="#07090E", height=32)
+        self.custom_titlebar.pack(side="top", fill="x")
+        self.custom_titlebar.pack_propagate(False)
+
+        tk.Frame(self.root, bg="#161B26", height=1).pack(side="top", fill="x")
+
+        left_box = tk.Frame(self.custom_titlebar, bg="#07090E")
+        left_box.pack(side="left", fill="y", padx=(10, 0))
+
+        if hasattr(self, "_app_icon_photo") and self._app_icon_photo:
+            lbl_ico = tk.Label(left_box, image=self._app_icon_photo, bg="#07090E")
+            lbl_ico.pack(side="left", padx=(0, 6))
+            lbl_ico.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+
+        lic_txt = f" [{self.license_info.get('msg', 'Ativo')}]" if self.license_info else ""
+        self.lbl_title_text = tk.Label(
+            left_box,
+            text=f"Pokas Ideia Store v{self.versao_app} — Automação & Resgate de Licenças Rockstar{lic_txt}",
+            font=("Segoe UI", 9, "bold"),
+            fg="#F1F5F9",
+            bg="#07090E"
+        )
+        self.lbl_title_text.pack(side="left")
+        self.lbl_title_text.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+        self.lbl_title_text.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
+
+        drag_area = tk.Frame(self.custom_titlebar, bg="#07090E")
+        drag_area.pack(side="left", fill="both", expand=True)
+        drag_area.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+        drag_area.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
+        left_box.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+        self.custom_titlebar.bind("<ButtonPress-1>", self._iniciar_arrasto_janela)
+        self.custom_titlebar.bind("<Double-Button-1>", lambda e: self._toggle_maximizar())
+
+        btn_box = tk.Frame(self.custom_titlebar, bg="#07090E")
+        btn_box.pack(side="right", fill="y")
+
+        self.btn_title_min = tk.Label(
+            btn_box, text="—", font=("Segoe UI", 10),
+            fg="#94A3B8", bg="#07090E", width=5, cursor="hand2"
+        )
+        self.btn_title_min.pack(side="left", fill="y")
+        self.btn_title_min.bind("<Button-1>", lambda e: self._minimizar_janela())
+        self.btn_title_min.bind("<Enter>", lambda e: self.btn_title_min.config(bg="#1E2536", fg="#FFFFFF"))
+        self.btn_title_min.bind("<Leave>", lambda e: self.btn_title_min.config(bg="#07090E", fg="#94A3B8"))
+
+        self.btn_title_max = tk.Label(
+            btn_box, text="▢", font=("Segoe UI", 10),
+            fg="#94A3B8", bg="#07090E", width=5, cursor="hand2"
+        )
+        self.btn_title_max.pack(side="left", fill="y")
+        self.btn_title_max.bind("<Button-1>", lambda e: self._toggle_maximizar())
+        self.btn_title_max.bind("<Enter>", lambda e: self.btn_title_max.config(bg="#1E2536", fg="#FFFFFF"))
+        self.btn_title_max.bind("<Leave>", lambda e: self.btn_title_max.config(bg="#07090E", fg="#94A3B8"))
+
+        self.btn_title_close = tk.Label(
+            btn_box, text="✕", font=("Segoe UI", 10),
+            fg="#94A3B8", bg="#07090E", width=6, cursor="hand2"
+        )
+        self.btn_title_close.pack(side="left", fill="y")
+        self.btn_title_close.bind("<Button-1>", lambda e: self._fechar_janela())
+        self.btn_title_close.bind("<Enter>", lambda e: self.btn_title_close.config(bg="#E81123", fg="#FFFFFF"))
+        self.btn_title_close.bind("<Leave>", lambda e: self.btn_title_close.config(bg="#07090E", fg="#94A3B8"))
+
     def _construir_interface(self):
+        self._construir_custom_titlebar()
         self.main_container = tk.Frame(self.root, bg=C_BG_MAIN)
         self.main_container.pack(fill="both", expand=True)
 
