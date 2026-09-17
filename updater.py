@@ -8,7 +8,7 @@ from pathlib import Path
 # ===================================================================
 #  CONFIGURACAO DO GITHUB PARA O GN ROC (POKASSTORE MOBILE)
 # ===================================================================
-GITHUB_RAW_VERSION_URL = "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/version.json"
+GITHUB_RAW_VERSION_URL = "https://api.github.com/repos/leolcw1/token-gen-dist/contents/version.json"
 
 # Se o repositorio for PRIVADO, insira o seu token aqui. Se for PUBLICO, deixe None.
 GITHUB_TOKEN = None
@@ -24,6 +24,7 @@ CURRENT_FALLBACK_VERSION = "1.0.0"
 def _get_headers() -> dict:
     headers = {
         "User-Agent": "PokasStore-AutoUpdater",
+        "Accept": "application/vnd.github.v3.raw",
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
         "Expires": "0"
