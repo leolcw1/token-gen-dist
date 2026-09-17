@@ -3700,7 +3700,7 @@ class MobileManager:
         self.paused = False
         self.tipo_execucao = "mobile"  # "mobile", "pc_4g" ou "pc_local"
         self.modo_email = "mhmdo"  # "mhmdo" ou "graph"
-        self.mhmdo_email_type = "custom"  # "custom", "short" ou "full"
+        self.mhmdo_email_type = "short"  # "short", "custom" ou "full"
         self.meta_contas = 10
         self.infinito = False
         self.contas_criadas_sessao = 0
@@ -4549,7 +4549,7 @@ class MobileAutomationGUI:
         self.lbl_saldo_usd = tk.Label(saldo_row, text="$0.000", font=("Segoe UI", 11, "bold"), fg=C_GREEN, bg=C_BG_CARD)
         self.lbl_saldo_usd.pack(side="left", padx=(6, 12))
 
-        self.email_type_var = tk.StringVar(value="custom")
+        self.email_type_var = tk.StringVar(value="short")
         for val, txt, cor in [("custom", "📧 Custom ($1/1k)", "#81D8F7"), ("short", "📩 Short ($2/1k)", C_AMBER), ("full", "📬 Full Access ($6/1k)", "#C084FC")]:
             rb = tk.Radiobutton(
                 saldo_row, text=txt, variable=self.email_type_var, value=val,
@@ -5766,7 +5766,7 @@ class MobileAutomationGUI:
                 self.card_custom.lbl_valor.config(text=str(info['custom']))
                 self.card_short.lbl_valor.config(text=str(info['short']))
                 self.card_full.lbl_valor.config(text=str(info['full']))
-                total_disp = info.get(self.manager.mhmdo_email_type, info['custom'])
+                total_disp = info.get(self.manager.mhmdo_email_type, info.get("short", 0))
                 self.lbl_badge_api.lbl.config(text=f"⚡ API: {total_disp} e-mails (${info['balance_usd']:.2f})")
             else:
                 self.lbl_saldo_usd.config(text="Erro")
