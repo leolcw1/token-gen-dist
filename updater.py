@@ -8,7 +8,7 @@ from pathlib import Path
 # ===================================================================
 #  CONFIGURACAO DO GITHUB PARA O GN ROC (POKASSTORE MOBILE)
 # ===================================================================
-GITHUB_RAW_VERSION_URL = "https://api.github.com/repos/leolcw1/token-gen-dist/contents/version.json"
+GITHUB_RAW_VERSION_URL = "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/version.json"
 
 # Se o repositorio for PRIVADO, insira o seu token aqui. Se for PUBLICO, deixe None.
 GITHUB_TOKEN = None
@@ -24,7 +24,6 @@ CURRENT_FALLBACK_VERSION = "1.0.0"
 def _get_headers() -> dict:
     headers = {
         "User-Agent": "PokasStore-AutoUpdater",
-        "Accept": "application/vnd.github.v3.raw",
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",
         "Expires": "0"
@@ -36,7 +35,7 @@ def _get_headers() -> dict:
 def get_local_version() -> str:
     if LOCAL_VERSION_FILE.exists():
         try:
-            with open(LOCAL_VERSION_FILE, "r", encoding="utf-8-sig") as f:
+            with open(LOCAL_VERSION_FILE, "r", encoding="utf-8") as f:
                 return json.load(f).get("version", CURRENT_FALLBACK_VERSION)
         except Exception:
             pass
