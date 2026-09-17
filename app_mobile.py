@@ -4306,6 +4306,21 @@ class MobileAutomationGUI:
             new_style = (style & ~WS_CAPTION) | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, new_style)
 
+            # Atributos DWM: elimina totalmente a listra branca de redimensionamento no Windows 10/11
+            dark_val = ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark_val), 4) # DWMWA_USE_IMMERSIVE_DARK_MODE
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(dark_val), 4) # Fallback Win10
+
+            cor_bg = ctypes.c_uint32(0x00080605) # BGR para #050608 (Dark Obsidian)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(cor_bg), 4) # DWMWA_BORDER_COLOR (Win11)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cor_bg), 4) # DWMWA_CAPTION_COLOR (Win11)
+
+            class MARGINS(ctypes.Structure):
+                _fields_ = [('cxLeftWidth', ctypes.c_int), ('cxRightWidth', ctypes.c_int),
+                            ('cyTopHeight', ctypes.c_int), ('cyBottomHeight', ctypes.c_int)]
+            margins = MARGINS(0, 0, 1, 0)
+            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+
             SWP_FRAMECHANGED = 0x0020
             SWP_NOMOVE = 0x0002
             SWP_NOSIZE = 0x0001
@@ -4318,8 +4333,9 @@ class MobileAutomationGUI:
         try:
             hwnd = getattr(self, "hwnd", None)
             if not hwnd:
-                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-                if hwnd == 0: hwnd = self.root.winfo_id()
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+            if getattr(self, "_is_maximized", False):
+                self._toggle_maximizar()
             ctypes.windll.user32.ReleaseCapture()
             ctypes.windll.user32.SendMessageW(hwnd, 0x0112, 0xF012, 0)
         except Exception:
@@ -4329,8 +4345,7 @@ class MobileAutomationGUI:
         try:
             hwnd = getattr(self, "hwnd", None)
             if not hwnd:
-                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-                if hwnd == 0: hwnd = self.root.winfo_id()
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
             ctypes.windll.user32.ShowWindow(hwnd, 6) # SW_MINIMIZE = 6
         except Exception:
             try: self.root.iconify()
@@ -4338,25 +4353,31 @@ class MobileAutomationGUI:
 
     def _toggle_maximizar(self):
         try:
+            hwnd = getattr(self, "hwnd", None)
+            if not hwnd:
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+
             if getattr(self, "_is_maximized", False):
                 self._is_maximized = False
-                if hasattr(self, "_prev_geom") and self._prev_geom:
-                    self.root.geometry(self._prev_geom)
+                if hasattr(self, "_prev_rect") and self._prev_rect:
+                    px, py, pw, ph = self._prev_rect
+                    ctypes.windll.user32.MoveWindow(hwnd, px, py, pw, ph, True)
                 else:
-                    self.root.geometry("1280x760")
+                    self.root.geometry("1060x860")
                 if hasattr(self, "btn_title_max_lbl"):
                     self.btn_title_max_lbl.config(text="▢")
             else:
-                self._prev_geom = self.root.geometry()
-                class RECT(ctypes.Structure):
-                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-                rect = RECT()
-                # SPI_GETWORKAREA = 0x0030: recupera as coordenadas livres da tela descontando a barra de tarefas do Windows
+                out = wintypes.RECT()
+                ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(out))
+                self._prev_rect = (out.left, out.top, out.right - out.left, out.bottom - out.top)
+
+                rect = wintypes.RECT()
+                # SPI_GETWORKAREA = 0x0030: recupera a area livre da tela descontando a barra de tarefas do Windows
                 ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
                 w = rect.right - rect.left
                 h = rect.bottom - rect.top
-                self.root.geometry(f"{w}x{h}+{rect.left}+{rect.top}")
+                # MoveWindow garante limites fisicos exatos sem que o Tkinter adicione altura de bordas sobrepondo a taskbar
+                ctypes.windll.user32.MoveWindow(hwnd, rect.left, rect.top, w, h, True)
                 self._is_maximized = True
                 if hasattr(self, "btn_title_max_lbl"):
                     self.btn_title_max_lbl.config(text="❐")
