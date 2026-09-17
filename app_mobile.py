@@ -3608,9 +3608,9 @@ class MobileDeviceWorker:
                             self.manager.running = False
                         break
 
-                    # Pausa preventiva de 1m30s a cada 7 contas deste aparelho
-                    if (self.manager.infinito or self.manager.meta_contas > 7) and (self.contas_criadas % 7 == 0):
-                        self.log(f"⏳ Bloco de 7 contas concluído! Pausa de 1m30s para esfriar ({self.contas_criadas} contas criadas neste aparelho)...")
+                    # Pausa preventiva de 1m30s a cada 5 contas deste aparelho
+                    if (self.manager.infinito or self.manager.meta_contas > 5) and (self.contas_criadas % 5 == 0):
+                        self.log(f"⏳ Bloco de 5 contas concluído! Pausa de 1m30s para esfriar ({self.contas_criadas} contas criadas neste aparelho)...")
                         try:
                             if self.current_browser:
                                 self.current_browser.close()
