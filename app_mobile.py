@@ -4439,7 +4439,14 @@ class MobileAutomationGUI:
 
             # Libera minsize temporariamente para permitir encolhimento perfeito em qualquer notebook/escala
             self.root.minsize(100, 100)
-            ctypes.windll.user32.MoveWindow(hwnd, x, y, w, h, True)
+
+            # Transição atômica instantânea: congela repintura GDI durante o resize e renderiza com layout 100% pronto
+            ctypes.windll.user32.SendMessageW(hwnd, 0x000B, 0, 0) # WM_SETREDRAW = 0
+            ctypes.windll.user32.MoveWindow(hwnd, x, y, w, h, False)
+            self.root.update_idletasks()
+            ctypes.windll.user32.SendMessageW(hwnd, 0x000B, 1, 0) # WM_SETREDRAW = 1
+            ctypes.windll.user32.RedrawWindow(hwnd, 0, 0, 0x0185) # RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE
+
             self._is_maximized = True
             if hasattr(self, "btn_title_max_lbl"):
                 self.btn_title_max_lbl.config(text="❐")
@@ -4457,9 +4464,16 @@ class MobileAutomationGUI:
                 self.root.minsize(700, 460)
                 if hasattr(self, "_prev_rect") and self._prev_rect:
                     px, py, pw, ph = self._prev_rect
-                    ctypes.windll.user32.MoveWindow(hwnd, px, py, pw, ph, True)
                 else:
-                    self.root.geometry("1060x800")
+                    px, py, pw, ph = 100, 100, 1060, 800
+
+                # Transição atômica instantânea sem delay e sem tela preta/vazia
+                ctypes.windll.user32.SendMessageW(hwnd, 0x000B, 0, 0) # WM_SETREDRAW = 0
+                ctypes.windll.user32.MoveWindow(hwnd, px, py, pw, ph, False)
+                self.root.update_idletasks()
+                ctypes.windll.user32.SendMessageW(hwnd, 0x000B, 1, 0) # WM_SETREDRAW = 1
+                ctypes.windll.user32.RedrawWindow(hwnd, 0, 0, 0x0185) # RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE
+
                 if hasattr(self, "btn_title_max_lbl"):
                     self.btn_title_max_lbl.config(text="▢")
             else:
