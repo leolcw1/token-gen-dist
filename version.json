@@ -1,5 +1,5 @@
 {
-  "version": "1.0.29",
+  "version": "1.0.30",
   "files": {
     "app_mobile.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/app_mobile.py",
     "hwid_engine.py": "https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/hwid_engine.py",
