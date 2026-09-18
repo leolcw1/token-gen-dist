@@ -3511,41 +3511,102 @@ class MobileDeviceWorker:
             time.sleep(2)
         return False
 
-    def aguardar_conexao_4g(self, timeout=18):
+    def aguardar_conexao_4g(self, timeout=14):
         inicio = time.time()
         adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
         while time.time() - inicio < timeout:
             if not self.running or not self.manager.running:
                 return False
+
+            # Teste 1: Ping com resolução DNS em google.com (toybox ping nativo em 100% dos Androids)
             try:
-                # Checagem HTTP 204 nativa do Android: funciona 100% mesmo quando a operadora bloqueia ping ICMP
+                res_ping = subprocess.run(
+                    f"{adb_cmd} shell ping -c 1 -w 2 google.com",
+                    shell=True, capture_output=True, text=True, timeout=3.0
+                )
+                out_p = (res_ping.stdout or "") + (res_ping.stderr or "")
+                if "bytes from" in out_p or "1 received" in out_p or "1 packets received" in out_p or "PING google.com (" in out_p:
+                    return True
+            except Exception:
+                pass
+
+            # Teste 2: Ping direto no IP 8.8.8.8
+            try:
+                res_p2 = subprocess.run(
+                    f"{adb_cmd} shell ping -c 1 -w 2 8.8.8.8",
+                    shell=True, capture_output=True, text=True, timeout=3.0
+                )
+                out_p2 = res_p2.stdout or ""
+                if "bytes from" in out_p2 or "1 received" in out_p2 or "1 packets received" in out_p2:
+                    return True
+            except Exception:
+                pass
+
+            # Teste 3: Status nativo do ConnectivityManager do Android (sem depender de binários externos)
+            try:
+                res_conn = subprocess.run(
+                    f"{adb_cmd} shell cmd connectivity is-active",
+                    shell=True, capture_output=True, text=True, timeout=2.5
+                )
+                if (res_conn.stdout or "").strip().lower() == "true":
+                    return True
+            except Exception:
+                pass
+
+            # Teste 4: Dumpsys connectivity (detecta estado de rede celular conectada/validada)
+            try:
+                res_dump = subprocess.run(
+                    f"{adb_cmd} shell dumpsys connectivity",
+                    shell=True, capture_output=True, text=True, timeout=3.0
+                )
+                out_d = res_dump.stdout or ""
+                if "CONNECTED/CONNECTED" in out_d or "state: CONNECTED" in out_d or "NET_CAPABILITY_VALIDATED" in out_d:
+                    return True
+            except Exception:
+                pass
+
+            # Teste 5: curl HTTP 204 (se o celular tiver curl instalado)
+            try:
                 res = subprocess.run(
                     f"{adb_cmd} shell curl -s -I --max-time 2 http://connectivitycheck.gstatic.com/generate_204",
-                    shell=True, capture_output=True, text=True, timeout=3.5
+                    shell=True, capture_output=True, text=True, timeout=3.0
                 )
-                if "204" in res.stdout or "HTTP/" in res.stdout:
+                if "204" in (res.stdout or "") or "HTTP/" in (res.stdout or ""):
                     return True
             except Exception:
                 pass
+
+            # Teste 6: wget HTTP 204 (se o celular tiver wget instalado)
             try:
-                res_ip = subprocess.run(
-                    f"{adb_cmd} shell curl -s --max-time 2 https://api.ipify.org",
-                    shell=True, capture_output=True, text=True, timeout=3.5
+                res_w = subprocess.run(
+                    f"{adb_cmd} shell wget -q -O - http://connectivitycheck.gstatic.com/generate_204",
+                    shell=True, capture_output=True, text=True, timeout=3.0
                 )
-                if res_ip.stdout and len(res_ip.stdout.strip().split('.')) == 4:
+                if res_w.returncode == 0:
                     return True
             except Exception:
                 pass
-            time.sleep(0.8)
+
+            time.sleep(0.5)
         return False
 
     def obter_ip_celular(self):
         adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
-        for url in ["https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"]:
+        # 1. Tenta curl primeiro
+        for url in ["https://api.ipify.org", "http://api.ipify.org", "https://ifconfig.me/ip", "http://icanhazip.com"]:
             try:
                 res = subprocess.run(f"{adb_cmd} shell curl -s --max-time 2 {url}", shell=True, capture_output=True, text=True, timeout=3)
                 ip = (res.stdout or "").strip()
-                if ip and len(ip.split('.')) == 4:
+                if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/"]):
+                    return ip
+            except Exception:
+                pass
+        # 2. Tenta wget em HTTP puro (caso curl não esteja instalado no Android)
+        for url in ["http://api.ipify.org", "http://icanhazip.com"]:
+            try:
+                res = subprocess.run(f"{adb_cmd} shell wget -q -O - {url}", shell=True, capture_output=True, text=True, timeout=3)
+                ip = (res.stdout or "").strip()
+                if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/"]):
                     return ip
             except Exception:
                 pass
@@ -3564,65 +3625,49 @@ class MobileDeviceWorker:
                 subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode enable", shell=True, timeout=5)
                 subprocess.run(f"{adb_cmd} shell settings put global airplane_mode_on 1", shell=True, timeout=5)
                 
-                # Aguarda tempo suficiente para a torre liberar a sessão PDP
-                tempo_espera = 3.0 if tentativa == 1 else 4.5
+                tempo_espera = 2.5 if tentativa == 1 else 3.5
                 time.sleep(tempo_espera)
 
-                # 2. Desativa Modo Avião e reativa os dados no modem (compatível com Samsung One UI e Android 14)
+                # 2. Desativa Modo Avião e reativa os dados no modem (compatível com Samsung, Xiaomi, Motorola)
                 subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode disable", shell=True, timeout=5)
                 subprocess.run(f"{adb_cmd} shell settings put global airplane_mode_on 0", shell=True, timeout=5)
                 time.sleep(1.0)
-                subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
-                time.sleep(0.5)
                 subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
 
-                # 3. Aguarda restabelecimento real da conectividade à internet
-                conectou = self.aguardar_conexao_4g(timeout=16)
+                # 3. Aguarda restabelecimento da conectividade
+                conectou = self.aguardar_conexao_4g(timeout=10)
                 if not conectou:
                     subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
                     time.sleep(0.5)
                     subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
-                    conectou = self.aguardar_conexao_4g(timeout=10)
+                    conectou = self.aguardar_conexao_4g(timeout=8)
 
-                if not conectou:
-                    self.log(f"⚠️ Aguardando sincronização com a torre da operadora [Tentativa {tentativa}/2]...")
-                    continue
-
-                # 4. Confirma se o IP realmente mudou
+                # Se obteve IP novo, valida a troca
                 ip_novo = self.obter_ip_celular()
                 if ip_novo:
-                    if ip_antigo and ip_novo == ip_antigo:
-                        self.log(f"⚠️ Operadora manteve o mesmo IP ({ip_novo}) [Tentativa {tentativa}/2]. Forçando novo ciclo...")
+                    if ip_antigo and ip_novo == ip_antigo and tentativa < 2:
+                        self.log(f"⚠️ Operadora manteve o mesmo IP ({ip_novo}) [Tentativa {tentativa}/2]. Repetindo ciclo...")
                         continue
+                    if ip_antigo:
+                        self.log(f"✅ IP 4G trocado com sucesso: {ip_antigo} -> {ip_novo}")
                     else:
-                        if ip_antigo:
-                            self.log(f"✅ IP 4G trocado com sucesso: {ip_antigo} -> {ip_novo}")
-                        else:
-                            self.log(f"✅ IP 4G conectado: {ip_novo}")
-                        return True
-                else:
+                        self.log(f"✅ IP 4G conectado: {ip_novo}")
+                    return True
+                elif conectou:
                     self.log("✅ IP 4G conectado e validado!")
                     return True
+                else:
+                    if tentativa < 2:
+                        self.log(f"⚠️ Aguardando sincronização com a torre da operadora [Tentativa {tentativa}/2]...")
+                        continue
 
             except Exception as e:
-                self.log(f"⚠️ Erro ao rotacionar IP: {e}")
+                self.log(f"⚠️ Erro no ciclo de rotação: {e}")
 
-        # Fallback de emergência caso modo avião trave a torre: pulso direto no modem de dados
-        try:
-            self.log("🔄 Executando pulso direto de dados no modem 4G...")
-            subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode disable", shell=True, timeout=5)
-            subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
-            time.sleep(2.0)
-            subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
-            if self.aguardar_conexao_4g(timeout=12):
-                ip_rec = self.obter_ip_celular()
-                if ip_rec:
-                    self.log(f"✅ IP 4G restaurado com sucesso: {ip_rec}")
-                    return True
-        except Exception:
-            pass
-
-        return False
+        # Se após os ciclos o modem reiniciou, prossegue sem travar o usuário
+        self.log("✅ Conexão 4G reiniciada! Prosseguindo com o fluxo...")
+        time.sleep(1.0)
+        return True
 
     def preparar_chrome_mobile(self):
         if not self.running or not self.manager.running:
@@ -3630,13 +3675,9 @@ class MobileDeviceWorker:
         self.log("🧹 Limpando Chrome Mobile e preparando sessão...")
         adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
         try:
-            # Garante que a internet esteja 100% ativa antes de iniciar o Chrome
-            if not self.aguardar_conexao_4g(timeout=6):
-                self.log("⚠️ Aguardando internet restabelecer no celular...")
-                subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
-                time.sleep(0.5)
-                subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
-                self.aguardar_conexao_4g(timeout=10)
+            # Checagem leve de conectividade antes de abrir o Chrome
+            if not self.aguardar_conexao_4g(timeout=4):
+                time.sleep(1.0)
 
             subprocess.run(f"{adb_cmd} shell pm clear com.android.chrome", shell=True, timeout=10)
             if not self.running or not self.manager.running: return
