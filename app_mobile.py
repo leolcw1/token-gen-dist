@@ -91,6 +91,7 @@ for fpath in [OUTLOOK_FILE, ROCKSTAR_FILE, ERRO_FILE, CODIGOS_FILE, PRONTAS_FILE
 # Garante que as pastas com adb.exe e scrcpy.exe estejam no PATH do processo
 diretorios_bin = [
     BASE_DIR,
+    os.path.join(BASE_DIR, "dist", "PokasStoreMobile"),
     os.path.join(BASE_DIR, "_internal", "adbutils", "binaries"),
     os.path.join(BASE_DIR, "adbutils", "binaries"),
 ]
@@ -948,7 +949,7 @@ def checar_rate_limit_login(log_cb=None):
                 if p[0] > 145 and p[1] < 35 and p[2] < 35:
                     consecutive += 1
                     if consecutive >= 40:  # ~120px contínuos de faixa de alerta
-                        if log_cb: log_cb("🚨 Erro #1.000.7 detectado no Launcher! Acionando pausa de 1m30s, limpeza profunda e troca de IP...")
+                        if log_cb: log_cb("🚨 Erro #1.000.7 detectado no Launcher! Acionando pausa de 2 minutos, limpeza profunda e troca de IP...")
                         return True
                 else:
                     consecutive = 0
@@ -1763,13 +1764,14 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
             # Ativa Modo Avião (desconecta rádio da operadora para forçar novo IP)
             subprocess.run(f"{adb_prefix}shell cmd connectivity airplane-mode enable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(f"{adb_prefix}shell settings put global airplane_mode_on 1", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(f"{adb_prefix}shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(3.0)
 
             # Desativa Modo Avião e reativa dados
             subprocess.run(f"{adb_prefix}shell cmd connectivity airplane-mode disable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(f"{adb_prefix}shell settings put global airplane_mode_on 0", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(f"{adb_prefix}shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state false", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.0)
+            subprocess.run(f"{adb_prefix}shell svc data disable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.5)
             subprocess.run(f"{adb_prefix}shell svc data enable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
             # Valida restabelecimento da conectividade 4G e resolução DNS
@@ -2367,7 +2369,22 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
             break
         except Exception:
             if log_cb: log_cb(f"🔄 {nome}: Recarregando formulário...")
-            page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F")
+            try:
+                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=20000)
+            except Exception as e_nav:
+                if "ERR_INTERNET_DISCONNECTED" in str(e_nav):
+                    if log_cb: log_cb(f"⚠️ {nome}: Internet oscilou no celular. Reativando dados 4G...")
+                    if manager and hasattr(manager, "serial"):
+                        adb_c = f"adb -s {manager.serial}" if manager.serial else "adb"
+                        subprocess.run(f"{adb_c} shell svc data disable", shell=True, timeout=5)
+                        time.sleep(0.5)
+                        subprocess.run(f"{adb_c} shell svc data enable", shell=True, timeout=5)
+                        if hasattr(manager, "aguardar_conexao_4g"):
+                            manager.aguardar_conexao_4g(timeout=14)
+                    time.sleep(2)
+                    page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+                else:
+                    raise
             time.sleep(1)
             _aceitar_cookies(page, nome, log_cb)
 
@@ -2619,14 +2636,28 @@ def executar_fluxo_graph(pw, conta, log_cb=None, manager=None):
         page = None
         for p in browser.contexts[0].pages:
             try:
-                if "rockstargames" in p.url:
+                if "rockstargames" in p.url and "chromewebdata" not in p.url:
                     page = p
                     break
             except Exception:
                 pass
         if not page:
             page = browser.contexts[0].pages[0]
-            page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F")
+            try:
+                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+            except Exception as e_p:
+                if "ERR_INTERNET_DISCONNECTED" in str(e_p):
+                    if manager and hasattr(manager, "serial"):
+                        adb_c = f"adb -s {manager.serial}" if manager.serial else "adb"
+                        subprocess.run(f"{adb_c} shell svc data disable", shell=True, timeout=5)
+                        time.sleep(0.5)
+                        subprocess.run(f"{adb_c} shell svc data enable", shell=True, timeout=5)
+                        if hasattr(manager, "aguardar_conexao_4g"):
+                            manager.aguardar_conexao_4g(timeout=14)
+                    time.sleep(2)
+                    page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+                else:
+                    raise
 
         primeira_vez_graph = [True]
         def obter_conta_graph():
@@ -2707,14 +2738,28 @@ def executar_fluxo_mhmdo(pw, email_type="custom", log_cb=None, manager=None):
         page = None
         for p in browser.contexts[0].pages:
             try:
-                if "rockstargames" in p.url:
+                if "rockstargames" in p.url and "chromewebdata" not in p.url:
                     page = p
                     break
             except Exception:
                 pass
         if not page:
             page = browser.contexts[0].pages[0]
-            page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F")
+            try:
+                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+            except Exception as e_p:
+                if "ERR_INTERNET_DISCONNECTED" in str(e_p):
+                    if manager and hasattr(manager, "serial"):
+                        adb_c = f"adb -s {manager.serial}" if manager.serial else "adb"
+                        subprocess.run(f"{adb_c} shell svc data disable", shell=True, timeout=5)
+                        time.sleep(0.5)
+                        subprocess.run(f"{adb_c} shell svc data enable", shell=True, timeout=5)
+                        if hasattr(manager, "aguardar_conexao_4g"):
+                            manager.aguardar_conexao_4g(timeout=14)
+                    time.sleep(2)
+                    page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+                else:
+                    raise
 
         # 2. Callback para obter/comprar email SOMENTE quando o formulário estiver pronto na tela
         worker_id = getattr(manager, 'serial', None) or getattr(manager, 'name', None) or 'mobile'
@@ -3466,19 +3511,32 @@ class MobileDeviceWorker:
             time.sleep(2)
         return False
 
-    def aguardar_conexao_4g(self, timeout=10):
+    def aguardar_conexao_4g(self, timeout=18):
         inicio = time.time()
         adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
         while time.time() - inicio < timeout:
             if not self.running or not self.manager.running:
                 return False
             try:
-                res = subprocess.run(f"{adb_cmd} shell ping -c 1 -W 1 1.1.1.1", shell=True, capture_output=True, text=True, timeout=2.5)
-                if res.returncode == 0 or "bytes from 1.1.1.1" in res.stdout:
+                # Checagem HTTP 204 nativa do Android: funciona 100% mesmo quando a operadora bloqueia ping ICMP
+                res = subprocess.run(
+                    f"{adb_cmd} shell curl -s -I --max-time 2 http://connectivitycheck.gstatic.com/generate_204",
+                    shell=True, capture_output=True, text=True, timeout=3.5
+                )
+                if "204" in res.stdout or "HTTP/" in res.stdout:
                     return True
             except Exception:
                 pass
-            time.sleep(0.3)
+            try:
+                res_ip = subprocess.run(
+                    f"{adb_cmd} shell curl -s --max-time 2 https://api.ipify.org",
+                    shell=True, capture_output=True, text=True, timeout=3.5
+                )
+                if res_ip.stdout and len(res_ip.stdout.strip().split('.')) == 4:
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.8)
         return False
 
     def obter_ip_celular(self):
@@ -3502,26 +3560,33 @@ class MobileDeviceWorker:
 
         for tentativa in range(1, 3):
             try:
-                # 1. Ativa Modo Avião (desconecta rádio da operadora para derrubar o vínculo de IP)
+                # 1. Ativa Modo Avião (desconecta rádio da operadora)
                 subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode enable", shell=True, timeout=5)
                 subprocess.run(f"{adb_cmd} shell settings put global airplane_mode_on 1", shell=True, timeout=5)
-                subprocess.run(f"{adb_cmd} shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true", shell=True, timeout=5)
                 
-                # Aguarda tempo suficiente para a torre/antena liberar a sessão
+                # Aguarda tempo suficiente para a torre liberar a sessão PDP
                 tempo_espera = 3.0 if tentativa == 1 else 4.5
                 time.sleep(tempo_espera)
 
-                # 2. Desativa Modo Avião e garante que os dados estejam ativos
+                # 2. Desativa Modo Avião e reativa os dados no modem (compatível com Samsung One UI e Android 14)
                 subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode disable", shell=True, timeout=5)
                 subprocess.run(f"{adb_cmd} shell settings put global airplane_mode_on 0", shell=True, timeout=5)
-                subprocess.run(f"{adb_cmd} shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state false", shell=True, timeout=5)
+                time.sleep(1.0)
+                subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
+                time.sleep(0.5)
                 subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
 
-                # 3. Aguarda restabelecimento da conectividade 4G
-                conectou = self.aguardar_conexao_4g(timeout=12)
+                # 3. Aguarda restabelecimento real da conectividade à internet
+                conectou = self.aguardar_conexao_4g(timeout=16)
                 if not conectou:
-                    time.sleep(1.5)
-                    conectou = self.aguardar_conexao_4g(timeout=8)
+                    subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
+                    time.sleep(0.5)
+                    subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
+                    conectou = self.aguardar_conexao_4g(timeout=10)
+
+                if not conectou:
+                    self.log(f"⚠️ Aguardando sincronização com a torre da operadora [Tentativa {tentativa}/2]...")
+                    continue
 
                 # 4. Confirma se o IP realmente mudou
                 ip_novo = self.obter_ip_celular()
@@ -3536,11 +3601,26 @@ class MobileDeviceWorker:
                             self.log(f"✅ IP 4G conectado: {ip_novo}")
                         return True
                 else:
-                    self.log("✅ IP 4G renovado com sucesso!")
+                    self.log("✅ IP 4G conectado e validado!")
                     return True
 
             except Exception as e:
                 self.log(f"⚠️ Erro ao rotacionar IP: {e}")
+
+        # Fallback de emergência caso modo avião trave a torre: pulso direto no modem de dados
+        try:
+            self.log("🔄 Executando pulso direto de dados no modem 4G...")
+            subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode disable", shell=True, timeout=5)
+            subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
+            time.sleep(2.0)
+            subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
+            if self.aguardar_conexao_4g(timeout=12):
+                ip_rec = self.obter_ip_celular()
+                if ip_rec:
+                    self.log(f"✅ IP 4G restaurado com sucesso: {ip_rec}")
+                    return True
+        except Exception:
+            pass
 
         return False
 
@@ -3550,6 +3630,14 @@ class MobileDeviceWorker:
         self.log("🧹 Limpando Chrome Mobile e preparando sessão...")
         adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
         try:
+            # Garante que a internet esteja 100% ativa antes de iniciar o Chrome
+            if not self.aguardar_conexao_4g(timeout=6):
+                self.log("⚠️ Aguardando internet restabelecer no celular...")
+                subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
+                time.sleep(0.5)
+                subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
+                self.aguardar_conexao_4g(timeout=10)
+
             subprocess.run(f"{adb_cmd} shell pm clear com.android.chrome", shell=True, timeout=10)
             if not self.running or not self.manager.running: return
             time.sleep(0.5)
@@ -3633,9 +3721,9 @@ class MobileDeviceWorker:
                             self.manager.running = False
                         break
 
-                    # Pausa preventiva de 1m30s a cada 5 contas deste aparelho
+                    # Pausa preventiva de 2 minutos a cada 5 contas deste aparelho
                     if (self.manager.infinito or self.manager.meta_contas > 5) and (self.contas_criadas % 5 == 0):
-                        self.log(f"⏳ Bloco de 5 contas concluído! Pausa de 1m30s para esfriar ({self.contas_criadas} contas criadas neste aparelho)...")
+                        self.log(f"⏳ Bloco de 5 contas concluído! Pausa de 2 minutos para esfriar ({self.contas_criadas} contas criadas neste aparelho)...")
                         try:
                             if self.current_browser:
                                 self.current_browser.close()
@@ -3647,12 +3735,12 @@ class MobileDeviceWorker:
                         except Exception:
                             pass
                         self.rotacionar_ip_4g()
-                        for sec in range(90, 0, -1):
+                        for sec in range(120, 0, -1):
                             if not self.running or not self.manager.running:
                                 break
                             while (self.paused or self.manager.paused) and self.running and self.manager.running:
                                 time.sleep(1)
-                            if sec in [90, 60, 30, 10]:
+                            if sec in [120, 90, 60, 30, 10]:
                                 self.log(f"⏳ Retomando em {sec}s...")
                             time.sleep(1)
                         if self.running and self.manager.running:
@@ -3680,20 +3768,20 @@ class MobileDeviceWorker:
 
                         self.rotacionar_ip_4g()
 
-                        self.log("☕ Aguardando 3 minutos (180s) para esfriar o aparelho antes de voltar com outro e-mail...")
-                        for sec in range(180, 0, -1):
+                        self.log("☕ Aguardando 5 minutos (300s) para esfriar o aparelho antes de voltar com outro e-mail...")
+                        for sec in range(300, 0, -1):
                             if not self.running or not self.manager.running:
                                 break
                             while (self.paused or self.manager.paused) and self.running and self.manager.running:
                                 time.sleep(1)
-                            if sec in [180, 150, 120, 90, 60, 30, 10]:
+                            if sec in [300, 240, 180, 120, 60, 30, 10]:
                                 self.log(f"⏳ Cooldown #1.500.7: Retomando fluxo em {sec}s com novo e-mail...")
                             time.sleep(1)
 
                         if not self.running or not self.manager.running:
                             break
 
-                        self.log("🚀 3 minutos concluídos! Retomando automação neste aparelho com novo e-mail...")
+                        self.log("🚀 5 minutos concluídos! Retomando automação neste aparelho com novo e-mail...")
                         continue
 
                 # Rotação de IP para a próxima conta
@@ -4013,7 +4101,7 @@ class MobileManager:
 
                         bloco_limite = 4
                         if (self.infinito or self.meta_contas > bloco_limite) and (self.contas_criadas_sessao % bloco_limite == 0):
-                            self.log(f"⏳ Bloco de {bloco_limite} contas (PC) concluído! Executando pausa de 1m30s para esfriar ({self.contas_criadas_sessao} contas criadas)...")
+                            self.log(f"⏳ Bloco de {bloco_limite} contas (PC) concluído! Executando pausa de 2 minutos para esfriar ({self.contas_criadas_sessao} contas criadas)...")
                             try:
                                 if self.current_browser:
                                     self.current_browser.close()
@@ -4021,10 +4109,10 @@ class MobileManager:
                                 pass
                             executar_limpeza_estilo_revo(self.log)
 
-                            for sec in range(90, 0, -1):
+                            for sec in range(120, 0, -1):
                                 if not self.running:
                                     break
-                                if sec in [90, 60, 30, 10]:
+                                if sec in [120, 90, 60, 30, 10]:
                                     self.log(f"⏳ Reabrindo navegador em {sec}s...")
                                 time.sleep(1)
                             if self.running:
@@ -4043,15 +4131,15 @@ class MobileManager:
                             executar_limpeza_estilo_revo(self.log)
                             if self.tipo_execucao == "pc_4g":
                                 rotacionar_ip_dataimpulse(self.log)
-                            self.log("☕ Aguardando 3 minutos (180s) para esfriar antes de voltar com outro e-mail...")
-                            for sec in range(180, 0, -1):
+                            self.log("☕ Aguardando 5 minutos (300s) para esfriar antes de voltar com outro e-mail...")
+                            for sec in range(300, 0, -1):
                                 if not self.running:
                                     break
-                                if sec in [180, 150, 120, 90, 60, 30, 10]:
+                                if sec in [300, 240, 180, 120, 60, 30, 10]:
                                     self.log(f"⏳ Cooldown #1.500.7: Retomando fluxo em {sec}s com novo e-mail...")
                                 time.sleep(1)
                             if self.running:
-                                self.log("🚀 3 minutos concluídos! Retomando automação no PC com novo e-mail...")
+                                self.log("🚀 5 minutos concluídos! Retomando automação no PC com novo e-mail...")
                             continue
 
                     if self.stats_cb:
@@ -5254,17 +5342,17 @@ class MobileAutomationGUI:
                         self.adicionar_log_redeem(f"🎯 Meta de {meta_redeem} contas resgatadas concluída com sucesso! 🟢")
                         break
 
-                    # Quando meta > 6 ou infinito, a cada 6 contas faz a limpeza profunda + rotação 4G + pausa de 1m30s
+                    # Quando meta > 6 ou infinito, a cada 6 contas faz a limpeza profunda + rotação 4G + pausa de 2 minutos
                     if (infinito or meta_redeem > 6) and (contas_resgatadas_bloco % 6 == 0):
                         self.adicionar_log_redeem("⏳ Bloco de 6 contas concluído! Executando LIMPEZA PROFUNDA do Launcher e renovando IP 4G...")
                         limpar_cache_profundo_rockstar(self.adicionar_log_redeem)
                         self.teve_limpeza = True
                         _rotacionar_ip_direto(self.adicionar_log_redeem)
-                        self.adicionar_log_redeem("⏳ Pausando por 1m30s (90s) para esfriar conexão e resetar rate limit...")
-                        for sec in range(90, 0, -1):
+                        self.adicionar_log_redeem("⏳ Pausando por 2 minutos (120s) para esfriar conexão e resetar rate limit...")
+                        for sec in range(120, 0, -1):
                             if not self.redeem_running:
                                 break
-                            if sec in [90, 60, 30, 10]:
+                            if sec in [120, 90, 60, 30, 10]:
                                 self.adicionar_log_redeem(f"⏳ Retomando resgate em {sec}s...")
                             time.sleep(1)
                         if self.redeem_running:
@@ -5273,7 +5361,7 @@ class MobileAutomationGUI:
                             hwnd = aguardar_janela_launcher(self.adicionar_log_redeem, timeout=45, manager=self)
                             if hwnd:
                                 trazer_janela_frente(hwnd)
-                            self.adicionar_log_redeem("⏳ Aguardando 12s para o Launcher carregar por completo pós-intervalo de 1m30s...")
+                            self.adicionar_log_redeem("⏳ Aguardando 12s para o Launcher carregar por completo pós-intervalo de 2 minutos...")
                             if not _sleep_check(12.0, self):
                                 break
                             self.adicionar_log_redeem("▶️ Retomando fluxo de resgate de licenças!")
@@ -5289,14 +5377,14 @@ class MobileAutomationGUI:
                             falhas_consecutivas_conta = 1
 
                         if falhas_consecutivas_conta >= 2:
-                            tempo_espera = 180
-                            tempo_str = "3 minutos (180s)"
+                            tempo_espera = 300
+                            tempo_str = "5 minutos (300s)"
                             proxima_tentativa = falhas_consecutivas_conta + 1
-                            self.adicionar_log_redeem(f"⚠️ Rate limit consecutivo detectado (#1.000.7) em {email_atual} ({falhas_consecutivas_conta}ª falha). Aumentando intervalo para a {proxima_tentativa}ª tentativa para 3 minutos...")
+                            self.adicionar_log_redeem(f"⚠️ Rate limit consecutivo detectado (#1.000.7) em {email_atual} ({falhas_consecutivas_conta}ª falha). Aumentando intervalo para a {proxima_tentativa}ª tentativa para 5 minutos...")
                         else:
-                            tempo_espera = 90
-                            tempo_str = "1m30s (90s)"
-                            self.adicionar_log_redeem(f"⚠️ Rate limit detectado (#1.000.7) em {email_atual}. Executando Limpeza Profunda, renovando IP 4G e aguardando 1m30s para a 2ª tentativa...")
+                            tempo_espera = 120
+                            tempo_str = "2 minutos (120s)"
+                            self.adicionar_log_redeem(f"⚠️ Rate limit detectado (#1.000.7) em {email_atual}. Executando Limpeza Profunda, renovando IP 4G e aguardando 2 minutos para a 2ª tentativa...")
 
                         limpar_cache_profundo_rockstar(self.adicionar_log_redeem)
                         self.teve_limpeza = True
@@ -5305,7 +5393,7 @@ class MobileAutomationGUI:
                         for sec in range(tempo_espera, 0, -1):
                             if not self.redeem_running:
                                 break
-                            if sec in [180, 150, 120, 90, 60, 30, 10]:
+                            if sec in [300, 240, 180, 120, 90, 60, 30, 10]:
                                 self.adicionar_log_redeem(f"⏳ Retomando em {sec}s...")
                             time.sleep(1)
                         if self.redeem_running:
