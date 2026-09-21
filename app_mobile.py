@@ -2064,8 +2064,10 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
     return False
 
 
-def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rotacionar_ip_fn=None, senha_ref=None, manager=None):
+def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rotacionar_ip_fn=None, senha_ref=None, manager=None, email=None):
     tentativas_verificacao_detalhes = 0
+    tentativas_travado = 0
+
     for tentativa in range(max_tentativas):
         # 1. Fechar o teclado virtual do Android e qualquer modal de autofill ativo
         try:
@@ -2073,86 +2075,119 @@ def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rot
         except Exception:
             pass
         _fechar_autofill_android(manager)
-        _pausa_humana(0.3, 0.8)
+        _pausa_humana(0.2, 0.5)
 
-        # 2. Clicar no botão Next com coordenadas nativas de mouse
-        if log_cb: log_cb(f"➡️ {nome}: Next (cadastro)! Aguardando resposta...")
+        # 2. Verifica se o botão já está travado em carregamento (spinner) antes do clique
+        is_busy = False
         try:
-            btn_next = page.wait_for_selector('button[data-ui-name="nextButton"]', timeout=5000)
-            if btn_next and btn_next.is_visible():
-                btn_next.scroll_into_view_if_needed()
-                _pausa_humana(0.2, 0.5)
-                btn_next.hover()
-                _pausa_humana(0.1, 0.3)
-                btn_next.click()
-            else:
-                page.click('button[data-ui-name="nextButton"]', timeout=5000)
+            is_busy = page.evaluate("""() => {
+                const btn = document.querySelector('button[data-ui-name="nextButton"]');
+                if (!btn) return false;
+                return btn.disabled || btn.classList.contains('loading') || btn.getAttribute('aria-busy') === 'true' || !!btn.querySelector('svg, .spinner, [class*="spinner" i], [class*="loading" i]');
+            }""")
         except Exception:
+            pass
+
+        if is_busy:
+            if log_cb: log_cb(f"🔄 {nome}: Botão Next já em carregamento (spinner ativo). Pressionando Enter para forçar envio...")
             try:
-                page.click('button[data-ui-name="nextButton"]', timeout=5000)
+                page.keyboard.press("Enter")
             except Exception:
                 pass
-
-        # 3. Loop ativo de espera de resposta com desengasgo automático de botão travado em spinner
-        inicio_espera = time.time()
-        respondeu = False
-        tentou_destravar = False
-
-        while time.time() - inicio_espera < 35:
-            # A. Campo de verificação apareceu (sucesso!)
-            if page.query_selector('input[data-ui-name="evCodeInput"], input[name="evCode"]'):
-                if log_cb: log_cb(f"✅ {nome}: Campo de verificação apareceu!")
-                return nickname, "OK"
-
-            # B. Alerta de erro ou erro de validação visível
-            alerta_visivel = page.query_selector('[data-ui-name="alertText"], [data-ui-name="validationError"], [role="alert"], div[class*="alert" i], div[class*="error" i]')
-            if not alerta_visivel:
+        else:
+            if log_cb: log_cb(f"➡️ {nome}: Next (cadastro)! Aguardando resposta...")
+            try:
+                btn_next = page.wait_for_selector('button[data-ui-name="nextButton"]', timeout=4000)
+                if btn_next and btn_next.is_visible():
+                    btn_next.scroll_into_view_if_needed()
+                    _pausa_humana(0.2, 0.4)
+                    btn_next.click(timeout=3500)
+                else:
+                    page.click('button[data-ui-name="nextButton"]', timeout=3500)
+            except Exception:
                 try:
-                    txt_dom = page.evaluate("() => (document.body ? document.body.innerText : '').toLowerCase()")
-                    if any(k in txt_dom for k in ["unable to handle", "handle your request", "1.500.7", "1.500", "sorry, we are unable", "too many requests"]):
-                        respondeu = True
-                        break
-                except Exception:
-                    pass
-            if alerta_visivel and alerta_visivel.is_visible():
-                respondeu = True
-                break
-
-            # C. Desengasgo de botão travado em spinner / loading após 8s
-            elapsed = time.time() - inicio_espera
-            if elapsed > 8 and not tentou_destravar:
-                tentou_destravar = True
-                if log_cb: log_cb(f"🔄 {nome}: Botão Next travado em carregamento ({int(elapsed)}s). Re-disparando envio para destravar...")
-                try:
-                    page.evaluate("""() => {
-                        const btn = document.querySelector('button[data-ui-name="nextButton"]');
-                        if (btn) btn.click();
-                        const form = document.querySelector('form');
-                        if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-                    }""")
+                    page.evaluate("() => { const b = document.querySelector('button[data-ui-name=\"nextButton\"]'); if (b) b.click(); }")
                 except Exception:
                     try:
                         page.keyboard.press("Enter")
                     except Exception:
                         pass
 
+        # 3. Loop ativo de espera de resposta com detecção ágil de spinner travado
+        inicio_espera = time.time()
+        respondeu = False
+        travado_spinner = False
+
+        while time.time() - inicio_espera < 18:
+            # A. Campo de verificação apareceu (sucesso!)
+            if page.query_selector('input[data-ui-name="evCodeInput"], input[name="evCode"]'):
+                if log_cb: log_cb(f"✅ {nome}: Campo de verificação apareceu!")
+                return nickname, "OK"
+
+            # B. Alerta real visível (ignora spans ocultos de acessibilidade de senha)
+            alerta_visivel = page.query_selector('div[data-ui-name="alertText"], [data-ui-name="validationError"]')
+            if alerta_visivel and alerta_visivel.is_visible():
+                txt_a = (alerta_visivel.inner_text() or "").strip()
+                if len(txt_a) > 2:
+                    respondeu = True
+                    break
+
+            try:
+                txt_dom = page.evaluate("() => (document.body ? document.body.innerText : '').toLowerCase()")
+                if any(k in txt_dom for k in [
+                    "unable to handle", "handle your request", "1.500.7", "1.500", "sorry, we are unable", 
+                    "too many requests", "3.000.2", "already have an account", "already registered"
+                ]):
+                    respondeu = True
+                    break
+            except Exception:
+                pass
+
+            # C. Detecção de botão em loading/spinner persistente após 6s
+            elapsed = time.time() - inicio_espera
+            if elapsed > 6:
+                try:
+                    busy = page.evaluate("""() => {
+                        const btn = document.querySelector('button[data-ui-name="nextButton"]');
+                        if (!btn) return false;
+                        return btn.disabled || btn.getAttribute('aria-busy') === 'true' || !!btn.querySelector('svg, .spinner, [class*="spinner" i], [class*="loading" i]');
+                    }""")
+                    if busy and elapsed > 14:
+                        travado_spinner = True
+                        break
+                except Exception:
+                    pass
+
             time.sleep(0.8)
 
-        # Checagem prioritária de sucesso (se o campo de código estiver na tela, ignorar qualquer alerta residual)
+        # Checagem prioritária de sucesso (se o campo de código estiver na tela)
         if page.query_selector('input[data-ui-name="evCodeInput"], input[name="evCode"]'):
             if log_cb: log_cb(f"✅ {nome}: Campo de verificação apareceu!")
             return nickname, "OK"
 
-        if not respondeu:
-            if log_cb: log_cb(f"⚠️ {nome}: Formulário sem resposta após 35s ({tentativa + 1}/{max_tentativas}). Tentando reenviar...")
-            try:
-                page.keyboard.press("Enter")
-            except Exception:
-                pass
-            time.sleep(2)
-            continue
+        # Se o botão ficou rodando sem resposta do backend da Rockstar
+        if travado_spinner or not respondeu:
+            tentativas_travado += 1
+            if tentativas_travado == 1:
+                if log_cb: log_cb(f"🔄 {nome}: Botão Next travado em carregamento (15s sem resposta da Rockstar). Recarregando formulário...")
+                try:
+                    email_atual = email
+                    if not email_atual:
+                        try: email_atual = page.input_value('input[data-ui-name="emailInput"]')
+                        except Exception: pass
+                    page.reload(timeout=15000)
+                    page.wait_for_selector('input[data-ui-name="emailInput"]', timeout=15000)
+                    _pausa_humana(0.8, 1.2)
+                    if email_atual:
+                        _preencher_cadastro(page, email_atual, senha_ref[0] if senha_ref else ROCKSTAR_DEFAULT_PASSWORD, nickname, nome, log_cb, limpar=True, manager=manager)
+                except Exception as ex_reload:
+                    if log_cb: log_cb(f"⚠️ Falha ao recarregar página: {ex_reload}")
+                continue
+            else:
+                if log_cb: log_cb(f"🛑 {nome}: Botão Next travado em carregamento infinito após recarregar. Bloqueio silencioso de IP / rate limit na Rockstar!")
+                return nickname, "IP_BLOQUEADO"
 
-        alerta = page.query_selector('[data-ui-name="alertText"], [role="alert"]')
+        alerta = page.query_selector('div[data-ui-name="alertText"]')
         texto_alerta = ""
         if alerta and alerta.is_visible():
             try:
@@ -2797,7 +2832,7 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
     senha_ref = [senha]
     senha_usada = _preencher_cadastro(page, email, senha, nickname, nome_dinamico, log_cb, manager=manager)
     senha_ref[0] = senha_usada
-    nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref, manager=manager)
+    nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref, manager=manager, email=email)
 
     w_id = getattr(manager, 'serial', None) or getattr(manager, 'name', None) or 'mobile'
     # Tratamento caso haja bloqueio temporário de IP (#1.500.7 / unable to handle)
@@ -2825,7 +2860,7 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
             nickname = gerar_nickname()
             if log_cb: log_cb(f"📧 {nome_dinamico}: Preenchendo novo e-mail ({email})...")
             _preencher_cadastro(page, email, senha_ref[0] if senha_ref else senha, nickname, nome_dinamico, log_cb, limpar=True, manager=manager)
-            nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref, manager=manager)
+            nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref, manager=manager, email=email)
             if status == "IP_BLOQUEADO":
                 if is_mhmdo and email:
                     descartar_email_mhmdo_invalido(email, worker_id=w_id)
@@ -2906,7 +2941,7 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
             if log_cb: log_cb(f"📧 {nome_dinamico}: Preenchendo novo e-mail ({email})...")
             try:
                 _preencher_cadastro(page, email, senha_ref[0] if senha_ref else senha, nickname, nome_dinamico, log_cb, limpar=True, manager=manager)
-                nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref, manager=manager)
+                nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref, manager=manager, email=email)
                 if status == "IP_BLOQUEADO":
                     if is_mhmdo and email:
                         descartar_email_mhmdo_invalido(email, worker_id=w_id)
