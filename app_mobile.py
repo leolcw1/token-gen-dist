@@ -1700,7 +1700,7 @@ def sanitizar_senha_rockstar(senha_original):
         s += random.choice("!@#$*")
     return s
 
-def _preencher_cadastro(page, email, senha, nickname, nome, log_cb=None, limpar=False):
+def _preencher_cadastro(page, email, senha, nickname, nome, log_cb=None, limpar=False, manager=None):
     # 1. E-mail
     _preencher_campo_fluido(page, 'input[data-ui-name="emailInput"]', email, (30, 60), limpar=limpar)
     try:
@@ -1709,14 +1709,33 @@ def _preencher_cadastro(page, email, senha, nickname, nome, log_cb=None, limpar=
         pass
     _pausa_humana(0.2, 0.4)
 
-    # 2. Senha Sanitizada
+    # 2. Senha Sanitizada (Preenchimento direto via DOM para não disparar Google Autofill / Credential Manager)
     senha_ajustada = sanitizar_senha_rockstar(senha)
-    _preencher_campo_fluido(page, 'input[data-ui-name="passwordInput"]', senha_ajustada, (45, 80), limpar=limpar)
-    # Remove foco da senha para fechar balão de requisitos e liberar a tela no mobile
+    try:
+        page.evaluate("""(val) => {
+            const el = document.querySelector('input[data-ui-name="passwordInput"]');
+            if (el) {
+                el.setAttribute('autocomplete', 'new-password');
+                el.setAttribute('data-lpignore', 'true');
+                const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                if (nativeSetter) {
+                    nativeSetter.call(el, val);
+                } else {
+                    el.value = val;
+                }
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }""", senha_ajustada)
+    except Exception:
+        _preencher_campo_fluido(page, 'input[data-ui-name="passwordInput"]', senha_ajustada, (45, 80), limpar=limpar)
+    
+    # Remove foco imediatamente e fecha autofill do Android caso tenha subido
     try:
         page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
     except Exception:
         pass
+    _fechar_autofill_android(manager)
     _pausa_humana(0.2, 0.4)
 
     # 3. Nickname
@@ -1938,14 +1957,15 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
     return False
 
 
-def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rotacionar_ip_fn=None, senha_ref=None):
+def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rotacionar_ip_fn=None, senha_ref=None, manager=None):
     tentativas_verificacao_detalhes = 0
     for tentativa in range(max_tentativas):
-        # 1. Fechar o teclado virtual do Android removendo o foco de qualquer input
+        # 1. Fechar o teclado virtual do Android e qualquer modal de autofill ativo
         try:
             page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
         except Exception:
             pass
+        _fechar_autofill_android(manager)
         _pausa_humana(0.3, 0.8)
 
         # 2. Clicar no botão Next com coordenadas nativas de mouse
@@ -2025,7 +2045,7 @@ def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rot
             time.sleep(2)
             continue
 
-        alerta = page.query_selector('[data-ui-name="alertText"], [role="alert"], div[class*="alert" i], div[class*="error" i]')
+        alerta = page.query_selector('[data-ui-name="alertText"], [role="alert"]')
         texto_alerta = ""
         if alerta and alerta.is_visible():
             try:
@@ -2035,7 +2055,13 @@ def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rot
 
         if not texto_alerta:
             try:
-                texto_alerta = _normalizar_texto(page.evaluate("() => document.body ? document.body.innerText : ''"))
+                texto_body = _normalizar_texto(page.evaluate("() => document.body ? document.body.innerText : ''"))
+                # Só usa texto do body para erros críticos de bloqueio de IP/rate-limit, NUNCA para regras estáticas de senha
+                if any(k in texto_body for k in [
+                    "unable to handle", "1.500.7", "too many requests", "3.000.2", 
+                    "could not be verified", "1.1900", "required parameters are missing", "1.000.2"
+                ]):
+                    texto_alerta = texto_body
             except Exception:
                 pass
 
@@ -2107,11 +2133,9 @@ def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rot
                 _pausa_humana(0.3, 0.5)
                 continue
 
-            # Detecção de senha inválida / sem números / muito fraca no alerta principal
+            # Detecção de senha inválida no alerta principal (banner real)
             if any(k in texto_alerta for k in [
-                "password must contain", "password is too weak", "senha deve conter", 
-                "senha fraca", "senha muito fraca", "least one number", "least one uppercase", 
-                "least one lowercase", "characters long"
+                "password is too weak", "senha fraca", "senha muito fraca"
             ]):
                 nova_senha = sanitizar_senha_rockstar(senha_ref[0] if senha_ref else ROCKSTAR_DEFAULT_PASSWORD)
                 if senha_ref and nova_senha == senha_ref[0]:
@@ -2119,11 +2143,26 @@ def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rot
                 if senha_ref:
                     senha_ref[0] = nova_senha
                 if log_cb: log_cb(f"🔑 {nome}: Senha inválida/fraca detectada no alerta ('{texto_alerta[:45]}'). Corrigida automaticamente para: {nova_senha}")
-                _preencher_campo_fluido(page, 'input[data-ui-name="passwordInput"]', nova_senha, (40, 75), limpar=True)
                 try:
-                    page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
+                    page.evaluate("""(val) => {
+                        const el = document.querySelector('input[data-ui-name="passwordInput"]');
+                        if (el) {
+                            el.setAttribute('autocomplete', 'new-password');
+                            el.setAttribute('data-lpignore', 'true');
+                            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                            if (nativeSetter) {
+                                nativeSetter.call(el, val);
+                            } else {
+                                el.value = val;
+                            }
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            if (document.activeElement) document.activeElement.blur();
+                        }
+                    }""", nova_senha)
                 except Exception:
-                    pass
+                    _preencher_campo_fluido(page, 'input[data-ui-name="passwordInput"]', nova_senha, (40, 75), limpar=True)
+                _fechar_autofill_android(manager)
                 _pausa_humana(0.3, 0.6)
                 continue
 
@@ -2197,11 +2236,26 @@ def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rot
                 if senha_ref:
                     senha_ref[0] = nova_senha
                 if log_cb: log_cb(f"🔑 {nome}: Senha sem número/fraca na validação. Corrigida automaticamente para: {nova_senha}")
-                _preencher_campo_fluido(page, 'input[data-ui-name="passwordInput"]', nova_senha, (30, 60), limpar=True)
                 try:
-                    page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
+                    page.evaluate("""(val) => {
+                        const el = document.querySelector('input[data-ui-name="passwordInput"]');
+                        if (el) {
+                            el.setAttribute('autocomplete', 'new-password');
+                            el.setAttribute('data-lpignore', 'true');
+                            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                            if (nativeSetter) {
+                                nativeSetter.call(el, val);
+                            } else {
+                                el.value = val;
+                            }
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            if (document.activeElement) document.activeElement.blur();
+                        }
+                    }""", nova_senha)
                 except Exception:
-                    pass
+                    _preencher_campo_fluido(page, 'input[data-ui-name="passwordInput"]', nova_senha, (30, 60), limpar=True)
+                _fechar_autofill_android(manager)
                 _pausa_humana(0.3, 0.6)
                 continue
 
@@ -2235,14 +2289,24 @@ def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rot
 def _fechar_autofill_android(manager=None):
     """Fecha a janela nativa de 'Usar a senha salva?' ou bottom sheet de credenciais do Android."""
     serial = getattr(manager, 'serial', None)
-    adb_cmd = f"adb -s {serial}" if serial else "adb"
+    # 1. Tenta via uiautomator2 diretamente se o modal estiver visível
     try:
-        # Toca na área externa superior (scrim) do modal para dispensá-lo
-        subprocess.run(f"{adb_cmd} shell input tap 540 350", shell=True, timeout=2)
+        import uiautomator2 as u2
+        d = u2.connect(serial) if serial else u2.connect()
+        if d(textMatches="(?i).*usar a senha salva.*|.*usar senha salva.*").exists:
+            d.press("back")
+            return
+        btn_cancel = d(resourceIdMatches=".*cancel_button.*|.*credential_cancel.*|.*dismiss_button.*|.*touch_outside.*")
+        if btn_cancel.exists:
+            btn_cancel.click()
+            return
     except Exception:
         pass
+
+    # 2. Envia KEYCODE_ESCAPE (111) como fallback via ADB
+    adb_bin = "adb.exe" if os.path.exists("adb.exe") else "adb"
+    adb_cmd = f"{adb_bin} -s {serial}" if serial else adb_bin
     try:
-        # Envia KEYCODE_ESCAPE (111) para fechar diálogos nativos sem voltar histórico
         subprocess.run(f"{adb_cmd} shell input keyevent 111", shell=True, timeout=2)
     except Exception:
         pass
@@ -2624,9 +2688,9 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
     nome_dinamico = email.split("@")[0]
     nickname = gerar_nickname()
     senha_ref = [senha]
-    senha_usada = _preencher_cadastro(page, email, senha, nickname, nome_dinamico, log_cb)
+    senha_usada = _preencher_cadastro(page, email, senha, nickname, nome_dinamico, log_cb, manager=manager)
     senha_ref[0] = senha_usada
-    nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref)
+    nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref, manager=manager)
 
     w_id = getattr(manager, 'serial', None) or getattr(manager, 'name', None) or 'mobile'
     # Tratamento caso haja bloqueio temporário de IP (#1.500.7 / unable to handle)
@@ -2653,8 +2717,8 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
             nome_dinamico = email.split("@")[0]
             nickname = gerar_nickname()
             if log_cb: log_cb(f"📧 {nome_dinamico}: Preenchendo novo e-mail ({email})...")
-            _preencher_cadastro(page, email, senha_ref[0] if senha_ref else senha, nickname, nome_dinamico, log_cb, limpar=True)
-            nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref)
+            _preencher_cadastro(page, email, senha_ref[0] if senha_ref else senha, nickname, nome_dinamico, log_cb, limpar=True, manager=manager)
+            nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref, manager=manager)
             if status == "IP_BLOQUEADO":
                 if is_mhmdo and email:
                     descartar_email_mhmdo_invalido(email, worker_id=w_id)
@@ -2734,8 +2798,8 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
             nickname = gerar_nickname()
             if log_cb: log_cb(f"📧 {nome_dinamico}: Preenchendo novo e-mail ({email})...")
             try:
-                _preencher_cadastro(page, email, senha_ref[0] if senha_ref else senha, nickname, nome_dinamico, log_cb, limpar=True)
-                nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref)
+                _preencher_cadastro(page, email, senha_ref[0] if senha_ref else senha, nickname, nome_dinamico, log_cb, limpar=True, manager=manager)
+                nickname, status = _submeter_cadastro(page, nickname, nome_dinamico, log_cb, senha_ref=senha_ref, manager=manager)
                 if status == "IP_BLOQUEADO":
                     if is_mhmdo and email:
                         descartar_email_mhmdo_invalido(email, worker_id=w_id)
@@ -3629,7 +3693,6 @@ class MobileDeviceWorker:
     def _iniciar_watchdog(self):
         self._watchdog_active = True
         serial = self.serial
-        adb_prefix = f"adb -s {serial} " if serial else "adb "
         def _watchdog_loop():
             try:
                 import uiautomator2 as u2
@@ -3638,25 +3701,26 @@ class MobileDeviceWorker:
                 while self._watchdog_active and self.running and self.manager.running:
                     try:
                         now = time.time()
-                        if (now - last_autofill_dismiss > 6.0):
-                            btn_cancel = d(resourceIdMatches=".*cancel_button.*|.*credential_cancel.*|.*dismiss_button.*|.*touch_outside.*")
-                            if btn_cancel.exists:
-                                btn_cancel.click()
+                        if (now - last_autofill_dismiss > 1.0):
+                            if d(textMatches="(?i).*usar a senha salva.*|.*usar senha salva.*").exists:
+                                d.press("back")
                                 last_autofill_dismiss = now
-                                self.log("⚡ Watchdog: Fechou pop-up de credenciais!")
-                            elif d(textMatches="(?i).*usar a senha salva.*|.*usar senha salva.*").exists:
-                                subprocess.run(f"{adb_prefix}shell input tap 500 100", shell=True, timeout=2)
-                                last_autofill_dismiss = now
-                                self.log("⚡ Watchdog: Dispensou pop-up 'Usar a senha salva?'!")
+                                self.log("⚡ Watchdog: Dispensou pop-up 'Usar a senha salva?' via BACK!")
+                            else:
+                                btn_cancel = d(resourceIdMatches=".*cancel_button.*|.*credential_cancel.*|.*dismiss_button.*|.*touch_outside.*")
+                                if btn_cancel.exists:
+                                    btn_cancel.click()
+                                    last_autofill_dismiss = now
+                                    self.log("⚡ Watchdog: Fechou pop-up de credenciais!")
 
-                        btn = d(resourceIdMatches=".*negative_button.*|.*signin_fre_dismiss_button.*") or d(textMatches="(?i).*agora n.*o.*|.*sem fazer login.*|.*recarregar.*")
+                        btn = d(resourceIdMatches=".*negative_button.*|.*signin_fre_dismiss_button.*|.*infobar_close_button.*|.*translate_infobar_close.*") or d(textMatches="(?i).*agora n.*o.*|.*sem fazer login.*|.*recarregar.*|.*nunca traduzir.*|.*fechar.*")
                         if btn.exists:
                             info = btn.info
                             bounds = info.get("bounds")
                             if bounds:
                                 cx = (bounds["left"] + bounds["right"]) // 2
                                 cy = (bounds["top"] + bounds["bottom"]) // 2
-                                subprocess.run(f"{adb_prefix}shell input tap {cx} {cy}", shell=True, timeout=2)
+                                d.click(cx, cy)
                             else:
                                 btn.click()
                             self.log("⚡ Watchdog: Fechou pop-up do Chrome ('Agora não' / 'Banner')!")
