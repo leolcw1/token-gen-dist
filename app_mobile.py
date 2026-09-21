@@ -3789,6 +3789,12 @@ class MobileDeviceWorker:
                             self.log("▶️ Retomando fluxo!")
                         continue
 
+                    # Rotação de IP a cada 3 contas criadas neste aparelho
+                    if self.contas_criadas % 3 == 0:
+                        self.log(f"🔄 Bloco de 3 contas concluído ({self.contas_criadas} total). Rotacionando IP 4G...")
+                        self.rotacionar_ip_4g()
+                        time.sleep(1.0)
+
                 else:
                     # Tratamento do erro #1.500.7 ("Sorry, we are unable to handle your request at this time")
                     if getattr(self, "ultimo_status", "") == "IP_BLOQUEADO":
@@ -3825,11 +3831,6 @@ class MobileDeviceWorker:
 
                         self.log("🚀 5 minutos concluídos! Retomando automação neste aparelho com novo e-mail...")
                         continue
-
-                # Rotação de IP para a próxima conta
-                if self.running and self.manager.running:
-                    self.rotacionar_ip_4g()
-                    time.sleep(0.5)
 
         except Exception as e:
             if self.running and self.manager.running:
