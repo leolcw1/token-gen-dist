@@ -48,6 +48,12 @@ def set_local_version(version: str):
     except Exception:
         pass
 
+def parse_version(ver_str: str) -> tuple:
+    try:
+        return tuple(int(x) for x in ver_str.strip().split("."))
+    except Exception:
+        return (0,)
+
 def check_for_updates() -> tuple[bool, dict]:
     """
     Retorna (has_update: bool, remote_manifest: dict)
@@ -62,7 +68,7 @@ def check_for_updates() -> tuple[bool, dict]:
         remote_version = str(remote_data.get("version", "")).strip()
         local_version = get_local_version().strip()
 
-        if remote_version and remote_version != local_version:
+        if remote_version and parse_version(remote_version) > parse_version(local_version):
             return True, remote_data
     except Exception:
         pass
