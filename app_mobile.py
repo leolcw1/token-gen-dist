@@ -2100,37 +2100,35 @@ def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rot
 def _configurar_2fa(page, senha, nome, log_cb=None):
     if log_cb: log_cb(f"🔐 {nome}: Acessando página de segurança...")
 
-    urls_seguranca = [
-        "https://signin.rockstargames.com/account/security",
-        "https://www.rockstargames.com/account/security",
-        "https://socialclub.rockstargames.com/settings/mfa"
-    ]
+    url_seguranca = "https://www.rockstargames.com/account/security"
 
     current_url = (page.url or "").lower()
-    if "account/security" not in current_url and "settings/mfa" not in current_url:
-        for u in urls_seguranca:
+    if "/account/security" not in current_url and "settings/mfa" not in current_url:
+        try:
+            page.goto(url_seguranca, wait_until="domcontentloaded", timeout=20000)
+        except Exception:
             try:
-                page.goto(u, wait_until="domcontentloaded", timeout=20000)
-                break
-            except Exception:
-                try:
-                    page.goto(u, timeout=20000)
-                    break
-                except Exception as e:
-                    if log_cb: log_cb(f"⚠️ {nome}: Tentativa {u} falhou: {str(e)[:40]}")
+                page.goto(url_seguranca, timeout=20000)
+            except Exception as e:
+                if log_cb: log_cb(f"⚠️ {nome}: Tentativa {url_seguranca} falhou: {str(e)[:40]}")
 
     btn_setup_seletor = (
         '[data-testid="startMfaSetupButton"], '
         'button[data-testid*="startMfaSetup"], '
         'button[data-testid*="mfa-setup"], '
         'button[data-testid*="MfaSetup"], '
+        'button[data-testid*="mfa"], '
         'button[aria-label*="Authenticator"], '
         'button[aria-label*="2-Step"], '
+        'button[aria-label*="2 etapas"], '
         'button:has-text("Set Up"), '
+        'button:has-text("Setup"), '
         'button:has-text("Configurar"), '
         'button:has-text("Setup Authenticator"), '
         'button:has-text("Ativar Verificação em 2 Etapas"), '
         'button:has-text("Ativar"), '
+        'button:has-text("2 etapas"), '
+        'button:has-text("2-Step"), '
         'a[href*="/mfa"], '
         '[data-ui-name="mfaSetupButton"]'
     )
@@ -2142,13 +2140,24 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
         except Exception:
             pass
 
+        # Se cair fora da página de segurança (por exemplo, na home www.rockstargames.com/)
+        cur_u = (page.url or "").lower()
+        if "/account/security" not in cur_u and "settings/mfa" not in cur_u:
+            if tentativa in [2, 10, 20]:
+                if log_cb: log_cb(f"🔄 {nome}: Página fora de /account/security ({cur_u[:45]}). Navegando para segurança...")
+                try:
+                    page.goto(url_seguranca, wait_until="domcontentloaded", timeout=20000)
+                except Exception:
+                    pass
+                continue
+
         # Se cair em tela de erro (399, "doesn't exist", "another error occurred", etc.) ou deslogado
         try:
             cur_body = (page.inner_text("body") or "").lower() if page else ""
             if "399" in cur_body or "doesn't exist" in cur_body or "another error occurred" in cur_body or "an error occurred" in cur_body:
-                if log_cb: log_cb(f"🔄 {nome}: Erro 399 detectado! Redirecionando direto para signin.rockstargames.com/account/security...")
+                if log_cb: log_cb(f"🔄 {nome}: Erro 399 detectado! Redirecionando direto para /account/security...")
                 time.sleep(1.5)
-                page.goto("https://signin.rockstargames.com/account/security", wait_until="domcontentloaded", timeout=25000)
+                page.goto(url_seguranca, wait_until="domcontentloaded", timeout=25000)
                 continue
         except Exception:
             pass
@@ -2168,7 +2177,7 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
                 pass
         elif tentativa == 20:
             try:
-                page.goto("https://signin.rockstargames.com/account/security", timeout=20000)
+                page.goto(url_seguranca, timeout=20000)
             except Exception:
                 pass
 
@@ -2183,7 +2192,7 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
                 const btns = Array.from(document.querySelectorAll('button, a'));
                 for (const b of btns) {
                     const txt = (b.innerText || b.textContent || '').toLowerCase();
-                    if (txt.includes('set up') || txt.includes('configurar') || txt.includes('authenticator') || txt.includes('2-step')) {
+                    if (txt.includes('set up') || txt.includes('setup') || txt.includes('configurar') || txt.includes('ativar') || txt.includes('authenticator') || txt.includes('autenticador') || txt.includes('2-step') || txt.includes('2 etapas') || txt.includes('duas etapas')) {
                         b.scrollIntoView({block: 'center'});
                         b.click();
                         return true;
@@ -2371,7 +2380,7 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
         except Exception:
             if log_cb: log_cb(f"🔄 {nome}: Recarregando formulário...")
             try:
-                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=20000)
+                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity", wait_until="domcontentloaded", timeout=20000)
             except Exception as e_nav:
                 if "ERR_INTERNET_DISCONNECTED" in str(e_nav):
                     if log_cb: log_cb(f"⚠️ {nome}: Internet oscilou no celular. Reativando dados 4G...")
@@ -2383,7 +2392,7 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
                         if hasattr(manager, "aguardar_conexao_4g"):
                             manager.aguardar_conexao_4g(timeout=14)
                     time.sleep(2)
-                    page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+                    page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity", wait_until="domcontentloaded", timeout=25000)
                 else:
                     raise
             time.sleep(1)
@@ -2486,7 +2495,7 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
 
             # Recarrega o fluxo de cadastro limpo do zero
             try:
-                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity", wait_until="domcontentloaded", timeout=25000)
             except Exception:
                 pass
 
@@ -2645,7 +2654,7 @@ def executar_fluxo_graph(pw, conta, log_cb=None, manager=None):
         if not page:
             page = browser.contexts[0].pages[0]
             try:
-                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity", wait_until="domcontentloaded", timeout=25000)
             except Exception as e_p:
                 if "ERR_INTERNET_DISCONNECTED" in str(e_p):
                     if manager and hasattr(manager, "serial"):
@@ -2656,7 +2665,7 @@ def executar_fluxo_graph(pw, conta, log_cb=None, manager=None):
                         if hasattr(manager, "aguardar_conexao_4g"):
                             manager.aguardar_conexao_4g(timeout=14)
                     time.sleep(2)
-                    page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+                    page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity", wait_until="domcontentloaded", timeout=25000)
                 else:
                     raise
 
@@ -2747,7 +2756,7 @@ def executar_fluxo_mhmdo(pw, email_type="custom", log_cb=None, manager=None):
         if not page:
             page = browser.contexts[0].pages[0]
             try:
-                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+                page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity", wait_until="domcontentloaded", timeout=25000)
             except Exception as e_p:
                 if "ERR_INTERNET_DISCONNECTED" in str(e_p):
                     if manager and hasattr(manager, "serial"):
@@ -2758,7 +2767,7 @@ def executar_fluxo_mhmdo(pw, email_type="custom", log_cb=None, manager=None):
                         if hasattr(manager, "aguardar_conexao_4g"):
                             manager.aguardar_conexao_4g(timeout=14)
                     time.sleep(2)
-                    page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F", wait_until="domcontentloaded", timeout=25000)
+                    page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity", wait_until="domcontentloaded", timeout=25000)
                 else:
                     raise
 
@@ -2946,7 +2955,7 @@ def executar_fluxo_mhmdo_pc(pw, email_type="custom", log_cb=None, manager=None):
             manager.current_browser = browser_context
 
         page = browser_context.new_page()
-        page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F")
+        page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity")
 
         # Callback para obter email no momento do cadastro
         def obter_email_na_hora():
@@ -3039,7 +3048,7 @@ def executar_fluxo_graph_pc(pw, conta, log_cb=None, manager=None):
             manager.current_browser = browser_context
 
         page = browser_context.new_page()
-        page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F")
+        page.goto("https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity")
 
         primeira_vez_graph_pc = [True]
         def obter_conta_graph():
@@ -3700,7 +3709,7 @@ class MobileDeviceWorker:
             subprocess.run(f'{adb_cmd} shell "chmod 777 /data/local/tmp/chrome-command-line"', shell=True, timeout=5)
             if not self.running or not self.manager.running: return
 
-            url = "https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2F"
+            url = "https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity"
             subprocess.run(f'{adb_cmd} shell am start -n com.android.chrome/com.google.android.apps.chrome.Main -d "{url}" --ez create_new_tab true --ez com.android.chrome.disable_first_run true --activity-clear-task', shell=True, timeout=10)
             if not self.running or not self.manager.running: return
             time.sleep(1.2)
