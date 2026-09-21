@@ -2101,12 +2101,13 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
     if log_cb: log_cb(f"🔐 {nome}: Acessando página de segurança...")
 
     urls_seguranca = [
+        "https://signin.rockstargames.com/account/security",
         "https://www.rockstargames.com/account/security",
-        "https://signin.rockstargames.com/account/security"
+        "https://socialclub.rockstargames.com/settings/mfa"
     ]
 
     current_url = (page.url or "").lower()
-    if "account/security" not in current_url:
+    if "account/security" not in current_url and "settings/mfa" not in current_url:
         for u in urls_seguranca:
             try:
                 page.goto(u, wait_until="domcontentloaded", timeout=20000)
@@ -2141,13 +2142,13 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
         except Exception:
             pass
 
-        # Se cair em tela de erro ou deslogado, recarrega
+        # Se cair em tela de erro (399, "doesn't exist", "another error occurred", etc.) ou deslogado
         try:
-            err_box = page.query_selector('div:has-text("An error occurred"), p:has-text("An error occurred"), h1:has-text("An error occurred")')
-            if err_box and err_box.is_visible():
-                if log_cb: log_cb(f"🔄 {nome}: Recarregando página de segurança...")
+            cur_body = (page.inner_text("body") or "").lower() if page else ""
+            if "399" in cur_body or "doesn't exist" in cur_body or "another error occurred" in cur_body or "an error occurred" in cur_body:
+                if log_cb: log_cb(f"🔄 {nome}: Erro 399 detectado! Redirecionando direto para signin.rockstargames.com/account/security...")
                 time.sleep(1.5)
-                page.goto("https://www.rockstargames.com/account/security", wait_until="domcontentloaded", timeout=25000)
+                page.goto("https://signin.rockstargames.com/account/security", wait_until="domcontentloaded", timeout=25000)
                 continue
         except Exception:
             pass
@@ -2167,7 +2168,7 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
                 pass
         elif tentativa == 20:
             try:
-                page.goto("https://www.rockstargames.com/account/security", timeout=20000)
+                page.goto("https://signin.rockstargames.com/account/security", timeout=20000)
             except Exception:
                 pass
 
