@@ -2633,23 +2633,34 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
     for i in range(12):
         if manager and not manager.running:
             return False, None, email, None, "PARADO"
-        # A. Mensagem de sucesso direta
-        msg_sucesso = page.query_selector('[data-ui-name="accountSuccessMessage"], div[class*="success"], div[class*="Success"]')
-        if msg_sucesso and msg_sucesso.is_visible():
-            confirmado = True
-            break
-        # B. Redirecionamento automático para segurança / socialclub / profile
-        current_url = page.url.lower()
-        if "account/security" in current_url or "socialclub.rockstargames.com" in current_url or "/settings" in current_url:
-            confirmado = True
-            break
+
+        try:
+            # A. Mensagem de sucesso direta
+            msg_sucesso = page.query_selector('[data-ui-name="accountSuccessMessage"], div[class*="success"], div[class*="Success"]')
+            if msg_sucesso and msg_sucesso.is_visible():
+                confirmado = True
+                break
+        except Exception:
+            pass
+
+        try:
+            # B. Redirecionamento automático para segurança / socialclub / profile
+            current_url = (page.url or "").lower()
+            if "account/security" in current_url or "socialclub.rockstargames.com" in current_url or "/settings" in current_url:
+                confirmado = True
+                break
+        except Exception:
+            pass
+
         # C. Re-clique preventivo caso o botão de enviar tenha continuado ativo após 5s
-        btn_reenvio = page.query_selector('button[data-ui-name="submitEmailVerifyButton"]')
-        if btn_reenvio and btn_reenvio.is_visible() and btn_reenvio.is_enabled() and i in [3, 7]:
+        if i in [3, 7]:
             try:
-                btn_reenvio.click()
+                btn_reenvio = page.query_selector('button[data-ui-name="submitEmailVerifyButton"]')
+                if btn_reenvio and btn_reenvio.is_visible() and btn_reenvio.is_enabled():
+                    btn_reenvio.click()
             except Exception:
                 pass
+
         time.sleep(1.5)
 
     if log_cb: log_cb(f"🎉 {nome_dinamico}: Conta validada com sucesso!")
