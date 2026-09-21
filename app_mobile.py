@@ -2097,7 +2097,22 @@ def _submeter_cadastro(page, nickname, nome, log_cb=None, max_tentativas=20, rot
 
     return nickname, "OK"
 
-def _configurar_2fa(page, senha, nome, log_cb=None):
+def _fechar_autofill_android(manager=None):
+    """Fecha a janela nativa de 'Usar a senha salva?' ou bottom sheet de credenciais do Android."""
+    serial = getattr(manager, 'serial', None)
+    adb_cmd = f"adb -s {serial}" if serial else "adb"
+    try:
+        # Toca na área externa superior (scrim) do modal para dispensá-lo
+        subprocess.run(f"{adb_cmd} shell input tap 540 350", shell=True, timeout=2)
+    except Exception:
+        pass
+    try:
+        # Envia KEYCODE_ESCAPE (111) para fechar diálogos nativos sem voltar histórico
+        subprocess.run(f"{adb_cmd} shell input keyevent 111", shell=True, timeout=2)
+    except Exception:
+        pass
+
+def _configurar_2fa(page, senha, nome, log_cb=None, manager=None):
     if log_cb: log_cb(f"🔐 {nome}: Acessando página de segurança...")
 
     url_seguranca = "https://www.rockstargames.com/account/security"
@@ -2216,12 +2231,32 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
 
     # 1. Confirmação inicial de senha para habilitar 2FA
     page.wait_for_selector('[data-testid="mfa-password-verification-input"]', timeout=20000)
-    _preencher_campo_fluido(page, '[data-testid="mfa-password-verification-input"]', senha, (30, 60), limpar=True)
+    _fechar_autofill_android(manager)
+    try:
+        page.evaluate("""(s) => {
+            const el = document.querySelector('[data-testid="mfa-password-verification-input"]');
+            if (el) {
+                el.setAttribute('autocomplete', 'new-password');
+                el.setAttribute('data-lpignore', 'true');
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                if (setter) setter.call(el, s);
+                else el.value = s;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.blur();
+            }
+        }""", senha)
+    except Exception:
+        pass
+    if page.input_value('[data-testid="mfa-password-verification-input"]') != senha:
+        _preencher_campo_fluido(page, '[data-testid="mfa-password-verification-input"]', senha, (30, 60), limpar=True)
+    _fechar_autofill_android(manager)
     page.click('button[type="submit"]')
     if log_cb: log_cb(f"🔑 {nome}: Senha enviada!")
 
     # 2. Captura da Secret Key
     page.wait_for_selector('[data-testid="secret-key-modal-trigger"]', timeout=30000)
+    _fechar_autofill_android(manager)
     page.click('[data-testid="secret-key-modal-trigger"]')
 
     page.wait_for_selector('[data-testid="secret-key"]', timeout=10000)
@@ -2229,6 +2264,7 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
     if log_cb: log_cb(f"🔐 {nome}: Secret key: {secret_key}")
 
     page.keyboard.press("Escape")
+    _fechar_autofill_android(manager)
     _pausa_humana(0.2, 0.4)
 
     # 3. Preenchimento 1º: Senha Atual (Current Password estritamente dentro do modal do 2FA)
@@ -2250,24 +2286,34 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
             pwd_input.scroll_into_view_if_needed(timeout=1500)
         except Exception:
             pass
+
+        # Preenche via JS sem focar para não disparar popup de senha do Android
         try:
-            pwd_input.fill(senha)
-            val_atual = pwd_input.input_value()
-            if val_atual != senha:
-                page.evaluate("""(sel, s) => {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                        if (setter) setter.call(el, s);
-                        else el.value = s;
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                }""", pwd_input_seletor, senha)
+            page.evaluate("""(sel, s) => {
+                const el = document.querySelector(sel);
+                if (el) {
+                    el.setAttribute('autocomplete', 'new-password');
+                    el.setAttribute('data-lpignore', 'true');
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                    if (setter) setter.call(el, s);
+                    else el.value = s;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.blur();
+                }
+            }""", pwd_input_seletor, senha)
         except Exception:
-            page.fill(pwd_input_seletor, senha)
-        
-        # Fecha o teclado virtual (Gboard) para não cobrir o botão Verify
+            pass
+
+        val_atual = pwd_input.input_value()
+        if val_atual != senha:
+            try:
+                pwd_input.fill(senha)
+            except Exception:
+                page.fill(pwd_input_seletor, senha)
+
+        # Fecha imediatamente a janela de 'Usar a senha salva?' se aberta pelo Android
+        _fechar_autofill_android(manager)
         try:
             page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
         except Exception:
@@ -2284,6 +2330,8 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
     except Exception:
         pass
 
+    _fechar_autofill_android(manager)
+
     if code_input and code_input.is_visible():
         if log_cb: log_cb(f"🔐 {nome}: Preenchendo código 2FA...")
         code_input.fill(totp)
@@ -2291,9 +2339,11 @@ def _configurar_2fa(page, senha, nome, log_cb=None):
             page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
         except Exception:
             pass
+        _fechar_autofill_android(manager)
         _pausa_humana(0.2, 0.3)
 
     # 5. Finalização e Submissão do 2FA
+    _fechar_autofill_android(manager)
     page.click('[data-testid="mfa-verification-submit"], button:has-text("Verify")')
     if log_cb: log_cb(f"🔐 {nome}: Verify clicado!")
 
@@ -2612,7 +2662,7 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
         return False, None, email, None, "PARADO"
 
     if log_cb: log_cb(f"🔐 {nome_dinamico}: Configurando 2FA...")
-    secret_key, senha_confirmada = _configurar_2fa(page, senha_ref[0], nome_dinamico, log_cb)
+    secret_key, senha_confirmada = _configurar_2fa(page, senha_ref[0], nome_dinamico, log_cb, manager=manager)
 
     return True, secret_key, email, senha_confirmada, "OK"
 
@@ -3696,6 +3746,8 @@ class MobileDeviceWorker:
             time.sleep(0.5)
             if not self.running or not self.manager.running: return
             subprocess.run(f"{adb_cmd} shell settings put secure autofill_service null", shell=True, timeout=5)
+            subprocess.run(f"{adb_cmd} shell settings put secure credential_service null", shell=True, timeout=5)
+            subprocess.run(f"{adb_cmd} shell settings put secure credential_service_primary null", shell=True, timeout=5)
             if not self.running or not self.manager.running: return
             subprocess.run(f"{adb_cmd} shell appops set com.android.chrome POST_NOTIFICATION ignore", shell=True, timeout=5)
             if not self.running or not self.manager.running: return
@@ -3703,7 +3755,7 @@ class MobileDeviceWorker:
             if not self.running or not self.manager.running: return
             subprocess.run(f"{adb_cmd} shell am set-debug-app --persistent com.android.chrome", shell=True, timeout=5)
             if not self.running or not self.manager.running: return
-            chrome_flags = "chrome --disable-fre --no-first-run --no-default-browser-check --disable-save-password-bubble --disable-autofill --disable-password-generation --disable-single-click-autofill"
+            chrome_flags = "chrome --disable-fre --no-first-run --no-default-browser-check --disable-save-password-bubble --disable-autofill --disable-password-generation --disable-single-click-autofill --disable-features=TouchToFillPasswords,TouchToFillPasswordSubmission,PasswordManagerOnboardingAndroid,TouchToFillPayments"
             subprocess.run(f'{adb_cmd} shell "echo \'{chrome_flags}\' > /data/local/tmp/chrome-command-line"', shell=True, timeout=5)
             if not self.running or not self.manager.running: return
             subprocess.run(f'{adb_cmd} shell "chmod 777 /data/local/tmp/chrome-command-line"', shell=True, timeout=5)
