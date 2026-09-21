@@ -2453,13 +2453,13 @@ def _fechar_autofill_android(manager=None):
     except Exception:
         pass
 
-def _configurar_2fa(page, senha, nome, log_cb=None, manager=None):
+def _configurar_2fa(page, senha, nome, log_cb=None, manager=None, email=None):
     if log_cb: log_cb(f"🔐 {nome}: Acessando página de segurança...")
 
     url_seguranca = "https://www.rockstargames.com/account/security"
 
     current_url = (page.url or "").lower()
-    if "/account/security" not in current_url and "settings/mfa" not in current_url:
+    if "signin.rockstargames.com" in current_url or ("/account/security" not in current_url and "settings/mfa" not in current_url):
         try:
             page.goto(url_seguranca, wait_until="domcontentloaded", timeout=20000)
         except Exception:
@@ -2490,9 +2490,92 @@ def _configurar_2fa(page, senha, nome, log_cb=None, manager=None):
     )
 
     btn_setup = None
+    erros_399_count = 0
     for tentativa in range(35):
         try:
             _aceitar_cookies(page, nome, log_cb)
+        except Exception:
+            pass
+
+        # Se cair em tela de erro 399 ("doesn't exist", "another error occurred", etc.)
+        try:
+            cur_body = (page.inner_text("body") or "").lower() if page else ""
+            if "399" in cur_body or "doesn't exist" in cur_body or "another error occurred" in cur_body or "an error occurred" in cur_body:
+                erros_399_count += 1
+                if log_cb: log_cb(f"🔄 {nome}: Erro 399 detectado (tentativa {erros_399_count})! Recuperando sessão...")
+
+                if erros_399_count == 1:
+                    # 1ª tentativa: Inicializa a sessão acessando a Home da Rockstar
+                    try:
+                        home_link = page.query_selector('a:has-text("Home"), a[href="/"], a[href*="rockstargames.com"]')
+                        if home_link and home_link.is_visible():
+                            home_link.click()
+                        else:
+                            page.goto("https://www.rockstargames.com/", wait_until="domcontentloaded", timeout=15000)
+                    except Exception:
+                        try:
+                            page.goto("https://www.rockstargames.com/", wait_until="domcontentloaded", timeout=15000)
+                        except Exception:
+                            pass
+                    time.sleep(2.5)
+                    try:
+                        page.goto(url_seguranca, wait_until="domcontentloaded", timeout=25000)
+                    except Exception:
+                        pass
+                    time.sleep(1.5)
+                    continue
+
+                elif erros_399_count == 2:
+                    # 2ª tentativa: Usa a ponte SSO do Social Club para forçar sincronização de sessão
+                    if log_cb: log_cb(f"🔄 {nome}: Tentando via Social Club SSO bridge (/settings/mfa)...")
+                    try:
+                        page.goto("https://socialclub.rockstargames.com/settings/mfa", wait_until="domcontentloaded", timeout=25000)
+                    except Exception:
+                        try:
+                            page.goto(url_seguranca, wait_until="domcontentloaded", timeout=25000)
+                        except Exception:
+                            pass
+                    time.sleep(2.5)
+                    continue
+
+                elif erros_399_count >= 3:
+                    # 3ª tentativa: Sessão deslogada -> realiza login direto com as credenciais da conta recém-criada
+                    alvo_email = email or (nome if "@" in nome else None)
+                    if alvo_email and senha:
+                        if log_cb: log_cb(f"🔑 {nome}: Restaurando login da conta para destravar 2FA...")
+                        try:
+                            page.goto("https://signin.rockstargames.com/signin/user-login?cid=rsg&returnUrl=%2Faccount%2Fsecurity", wait_until="domcontentloaded", timeout=25000)
+                            time.sleep(2.0)
+                            try:
+                                _aceitar_cookies(page, nome, log_cb)
+                            except Exception:
+                                pass
+                            _fechar_autofill_android(manager)
+
+                            email_sel = 'input[data-ui-name="emailInput"], input[name="email"], input[type="email"]'
+                            page.wait_for_selector(email_sel, timeout=12000)
+                            _preencher_campo_robusto(page, email_sel, alvo_email, (30, 60))
+
+                            pwd_sel = 'input[data-ui-name="passwordInput"], input[name="password"], input[type="password"]'
+                            page.wait_for_selector(pwd_sel, timeout=12000)
+                            _preencher_campo_robusto(page, pwd_sel, senha, (30, 60))
+                            _fechar_autofill_android(manager)
+                            time.sleep(0.5)
+
+                            btn_sub = 'button[data-ui-name="submitButton"], button[type="submit"]'
+                            page.click(btn_sub, timeout=5000)
+                            if log_cb: log_cb(f"🔑 {nome}: Login submetido! Aguardando página de segurança...")
+                            time.sleep(4.0)
+                        except Exception as e_recup:
+                            if log_cb: log_cb(f"⚠️ {nome}: Falha ao restaurar login: {e_recup}")
+                        continue
+                    else:
+                        time.sleep(2.0)
+                        try:
+                            page.goto(url_seguranca, wait_until="domcontentloaded", timeout=25000)
+                        except Exception:
+                            pass
+                        continue
         except Exception:
             pass
 
@@ -2506,17 +2589,6 @@ def _configurar_2fa(page, senha, nome, log_cb=None, manager=None):
                 except Exception:
                     pass
                 continue
-
-        # Se cair em tela de erro (399, "doesn't exist", "another error occurred", etc.) ou deslogado
-        try:
-            cur_body = (page.inner_text("body") or "").lower() if page else ""
-            if "399" in cur_body or "doesn't exist" in cur_body or "another error occurred" in cur_body or "an error occurred" in cur_body:
-                if log_cb: log_cb(f"🔄 {nome}: Erro 399 detectado! Redirecionando direto para /account/security...")
-                time.sleep(1.5)
-                page.goto(url_seguranca, wait_until="domcontentloaded", timeout=25000)
-                continue
-        except Exception:
-            pass
 
         try:
             btn_setup = page.query_selector(btn_setup_seletor)
@@ -3068,7 +3140,7 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
         try:
             # B. Redirecionamento automático para segurança / socialclub / profile
             current_url = (page.url or "").lower()
-            if "account/security" in current_url or "socialclub.rockstargames.com" in current_url or "/settings" in current_url:
+            if "/create/" not in current_url and ("account/security" in current_url or "socialclub.rockstargames.com" in current_url or "/settings" in current_url):
                 confirmado = True
                 break
         except Exception:
@@ -3085,8 +3157,12 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
 
         time.sleep(1.5)
 
-    if log_cb: log_cb(f"🎉 {nome_dinamico}: Conta validada com sucesso!")
-    time.sleep(1.0)
+    if confirmado:
+        if log_cb: log_cb(f"🎉 {nome_dinamico}: Conta validada com sucesso!")
+        time.sleep(2.0)
+    else:
+        if log_cb: log_cb(f"⚠️ {nome_dinamico}: Prosseguindo para página de segurança...")
+        time.sleep(1.5)
 
     # 6. Configurar 2FA
     if manager and hasattr(manager, "checar_pausa"):
@@ -3095,7 +3171,7 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
         return False, None, email, None, "PARADO"
 
     if log_cb: log_cb(f"🔐 {nome_dinamico}: Configurando 2FA...")
-    secret_key, senha_confirmada = _configurar_2fa(page, senha_ref[0], nome_dinamico, log_cb, manager=manager)
+    secret_key, senha_confirmada = _configurar_2fa(page, senha_ref[0], nome_dinamico, log_cb, manager=manager, email=email)
 
     return True, secret_key, email, senha_confirmada, "OK"
 
