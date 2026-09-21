@@ -2661,71 +2661,144 @@ def _configurar_2fa(page, senha, nome, log_cb=None, manager=None):
             pass
         _pausa_humana(0.2, 0.4)
 
-    # 4. Geração e Preenchimento 2º: Código de Verificação 2FA (TOTP fresco e direto)
-    totp = gerar_totp(secret_key)
-    if log_cb: log_cb(f"🔐 {nome}: TOTP: {totp}")
+    # 4. Geração e Preenchimento Seguro: Código de Verificação 2FA com Sincronia de Janela
+    seg_atual = int(time.time()) % 30
+    if seg_atual >= 23:
+        espera = (30 - seg_atual) + 1.0
+        if log_cb: log_cb(f"⏳ {nome}: Aguardando {espera:.1f}s para iniciar ciclo TOTP seguro...")
+        time.sleep(espera)
 
+    totp = gerar_totp(secret_key)
+    if log_cb: log_cb(f"🔐 {nome}: TOTP gerado: {totp}")
+
+    code_input_seletor = '[data-testid="mfa-code-verification-input"], input[placeholder*="XXXXXX"], input[name*="code" i]'
     code_input = None
     try:
-        code_input = page.wait_for_selector('[data-testid="mfa-code-verification-input"]', timeout=10000)
+        code_input = page.wait_for_selector(code_input_seletor, timeout=10000)
     except Exception:
         pass
 
-    _fechar_autofill_android(manager)
-
     if code_input and code_input.is_visible():
         if log_cb: log_cb(f"🔐 {nome}: Preenchendo código 2FA...")
-        code_input.fill(totp)
         try:
-            page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
+            page.evaluate("""(sel, code) => {
+                const el = document.querySelector(sel);
+                if (el) {
+                    el.focus();
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                    if (setter) setter.call(el, code);
+                    else el.value = code;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }""", code_input_seletor, totp)
         except Exception:
             pass
-        _fechar_autofill_android(manager)
-        _pausa_humana(0.2, 0.3)
 
-    # 5. Finalização e Submissão do 2FA
-    _fechar_autofill_android(manager)
-    page.click('[data-testid="mfa-verification-submit"], button:has-text("Verify")')
-    if log_cb: log_cb(f"🔐 {nome}: Verify clicado!")
+        try:
+            if code_input.input_value() != totp:
+                code_input.fill(totp)
+        except Exception:
+            pass
+        _pausa_humana(0.3, 0.5)
 
-    # 6. Aguarda a resposta real do servidor (Sucesso ou Erro de senha)
+    # 5. Submissão e Loop de Verificação Ativo com Reenvio Automático em caso de Código Inválido
+    btn_verify_seletor = '[data-testid="mfa-verification-submit"], button:has-text("Verify"), button:has-text("Verificar")'
+    try:
+        page.click(btn_verify_seletor, timeout=4000)
+        if log_cb: log_cb(f"🔐 {nome}: Verify clicado!")
+    except Exception:
+        pass
+
     senha_usada_final = senha
-    for _ in range(12):
-        time.sleep(0.8)
-        # Se o botão de submit sumiu da tela, o 2FA foi concluído com sucesso
-        btn_v = page.query_selector('[data-testid="mfa-verification-submit"]')
-        if not btn_v or not btn_v.is_visible():
+    sucesso_2fa = False
+    max_tentativas_2fa = 4
+
+    for tentativa_2fa in range(1, max_tentativas_2fa + 1):
+        # Observa resposta do servidor por até 8 segundos
+        erro_codigo = False
+        erro_senha = False
+
+        for _ in range(10):
+            time.sleep(0.8)
+            # Se o botão de submissão sumiu da tela ou o modal fechou, sucesso absoluto!
+            btn_v = page.query_selector(btn_verify_seletor)
+            if not btn_v or not btn_v.is_visible():
+                sucesso_2fa = True
+                break
+
+            # Varre mensagens de erro na tela (código inválido / senha incorreta)
+            try:
+                for el in page.query_selector_all('[data-ui-name="validationError"], div[class*="error" i], span[class*="error" i], p[class*="error" i]'):
+                    if el.is_visible():
+                        txt = _normalizar_texto(el.inner_text())
+                        if any(k in txt for k in ["verification code is invalid", "code is invalid", "codigo invalido", "invalido", "invalid"]):
+                            erro_codigo = True
+                            break
+                        if any(k in txt for k in ["incorrect password", "senha incorreta"]):
+                            erro_senha = True
+                            break
+            except Exception:
+                pass
+
+            if erro_codigo or erro_senha:
+                break
+
+        if sucesso_2fa:
             break
 
-        # Verifica se apareceu erro de senha incorreta
-        erro_encontrado = False
-        try:
-            for el in page.query_selector_all('[data-ui-name="validationError"], div[class*="error"], span[class*="error"], p[class*="error"]'):
-                if el.is_visible():
-                    txt = _normalizar_texto(el.inner_text())
-                    if "incorrect password" in txt or "senha incorreta" in txt:
-                        erro_encontrado = True
-                        break
-        except Exception:
-            pass
-
-        if erro_encontrado:
+        # Se acusou senha incorreta, tenta senha alternativa dinâmica
+        if erro_senha:
             alt_senha = gerar_senha_rockstar_dinamica()
             if log_cb: log_cb(f"🔑 {nome}: Senha incorreta confirmada no 2FA. Tentando senha alternativa ({alt_senha})...")
             if pwd_input:
-                pwd_input.fill(alt_senha)
-                _pausa_humana(0.2, 0.3)
-                novo_totp = gerar_totp(secret_key)
-                if code_input:
+                try:
+                    pwd_input.fill(alt_senha)
+                    senha_usada_final = alt_senha
+                except Exception:
+                    pass
+
+        # Se acusou código inválido/expirado, aguarda janela segura e injeta novo TOTP
+        if erro_codigo or (not sucesso_2fa and tentativa_2fa < max_tentativas_2fa):
+            seg = int(time.time()) % 30
+            if seg >= 22:
+                tempo_espera = (30 - seg) + 1.0
+                if log_cb: log_cb(f"⏳ {nome}: Código 2FA expirado. Aguardando {tempo_espera:.1f}s para novo ciclo TOTP seguro...")
+                time.sleep(tempo_espera)
+
+            novo_totp = gerar_totp(secret_key)
+            if log_cb: log_cb(f"🔄 {nome}: Código 2FA inválido detectado na tela. Re-injetando novo TOTP fresco ({tentativa_2fa + 1}/{max_tentativas_2fa}): {novo_totp}")
+
+            try:
+                page.evaluate("""(sel, code) => {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        el.focus();
+                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                        if (setter) setter.call(el, code);
+                        else el.value = code;
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }""", code_input_seletor, novo_totp)
+            except Exception:
+                pass
+
+            if code_input:
+                try:
                     code_input.fill(novo_totp)
-                _pausa_humana(0.2, 0.3)
-                page.click('[data-testid="mfa-verification-submit"], button:has-text("Verify")')
-                senha_usada_final = alt_senha
-                time.sleep(1.5)
-            break
+                except Exception:
+                    pass
+
+            _pausa_humana(0.3, 0.6)
+            try:
+                page.click(btn_verify_seletor, timeout=4000)
+                if log_cb: log_cb(f"🔐 {nome}: Verify re-clicado com novo código!")
+            except Exception:
+                pass
 
     try:
-        page.wait_for_selector('[data-testid="mfa-verification-submit"]', state="hidden", timeout=15000)
+        page.wait_for_selector(btn_verify_seletor, state="hidden", timeout=12000)
     except Exception:
         pass
     time.sleep(1.0)
