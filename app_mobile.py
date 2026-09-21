@@ -19,18 +19,19 @@ import subprocess
 # Suprime globalmente abertura de janelas de console (CMD/ADB) no Windows
 if sys.platform == "win32":
     _orig_popen = subprocess.Popen
-    def _silent_popen(*args, **kwargs):
-        if "creationflags" not in kwargs:
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        else:
-            kwargs["creationflags"] |= subprocess.CREATE_NO_WINDOW
-        if "startupinfo" not in kwargs or kwargs["startupinfo"] is None:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = subprocess.SW_HIDE
-            kwargs["startupinfo"] = si
-        return _orig_popen(*args, **kwargs)
-    subprocess.Popen = _silent_popen
+    class _SilentPopen(_orig_popen):
+        def __init__(self, *args, **kwargs):
+            if "creationflags" not in kwargs:
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            else:
+                kwargs["creationflags"] |= subprocess.CREATE_NO_WINDOW
+            if "startupinfo" not in kwargs or kwargs["startupinfo"] is None:
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = subprocess.SW_HIDE
+                kwargs["startupinfo"] = si
+            super().__init__(*args, **kwargs)
+    subprocess.Popen = _SilentPopen
 
 import unicodedata
 import urllib.parse
@@ -1825,44 +1826,58 @@ def _executar_adb(args, serial=None, timeout=5):
 
 def _garantir_curl_device(serial=None):
     """Garante que haja um binário funcional de curl no aparelho (/data/local/tmp/curl)."""
-    # 1. Verifica se já existe curl nativo no sistema do Android
+    # 1. Verifica se já existe curl nativo funcional no sistema do Android
     res = _executar_adb(["shell", "curl -V"], serial=serial, timeout=3)
     if res and res.returncode == 0:
         return "curl"
 
-    # 2. Verifica se já foi instalado anteriormente em /data/local/tmp/curl
-    res = _executar_adb(["shell", "/data/local/tmp/curl -V"], serial=serial, timeout=3)
-    if res and res.returncode == 0:
-        return "/data/local/tmp/curl"
+    # 2. Verifica se já foi instalado anteriormente em /data/local/tmp/
+    for cand in ["/data/local/tmp/curl", "/data/local/tmp/curl_static", "/data/local/tmp/curl_aarch64", "/data/local/tmp/curl_test"]:
+        res = _executar_adb(["shell", f"{cand} -V"], serial=serial, timeout=3)
+        if res and res.returncode == 0:
+            return cand
 
-    # 3. Detecta arquitetura e localiza o binário estático
+    # 3. Detecta arquitetura e localiza o binário estático no PC
     abi_res = _executar_adb(["shell", "getprop ro.product.cpu.abi"], serial=serial, timeout=3)
     abi = (abi_res.stdout or "").strip() if abi_res else "arm64-v8a"
 
     nome_bin = "curl_aarch64" if "64" in abi else "curl_armv7"
-    local_bin = os.path.join(BASE_DIR, nome_bin)
+    
+    candidate_paths = [
+        os.path.join(BASE_DIR, nome_bin),
+        os.path.join(BASE_DIR, "dist", "PokasStoreMobile", nome_bin),
+        os.path.join(os.path.dirname(sys.executable), nome_bin),
+        os.path.join(os.getcwd(), nome_bin),
+        os.path.join(BASE_DIR, "curl_aarch64")
+    ]
+    local_bin = None
+    for p in candidate_paths:
+        if os.path.isfile(p) and os.path.getsize(p) > 100000:
+            local_bin = p
+            break
 
-    if not os.path.exists(local_bin):
-        alt_bin = os.path.join(BASE_DIR, "dist", "PokasStoreMobile", nome_bin)
-        if os.path.exists(alt_bin):
-            local_bin = alt_bin
-
-    if not os.path.exists(local_bin):
+    # Se não existir localmente, baixa diretamente do repositório
+    if not local_bin:
         try:
             import requests
             url = f"https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/{nome_bin}"
-            resp = requests.get(url, timeout=20)
+            target_p = os.path.join(BASE_DIR, nome_bin)
+            resp = requests.get(url, timeout=30)
             if resp.status_code == 200 and len(resp.content) > 100000:
-                with open(local_bin, 'wb') as out_f:
+                with open(target_p, 'wb') as out_f:
                     out_f.write(resp.content)
+                local_bin = target_p
         except Exception:
             pass
 
-    if os.path.exists(local_bin):
+    # Envia para o celular via ADB
+    if local_bin and os.path.exists(local_bin):
         try:
-            _executar_adb(["push", local_bin, "/data/local/tmp/curl"], serial=serial, timeout=12)
-            _executar_adb(["shell", "chmod 755 /data/local/tmp/curl"], serial=serial, timeout=4)
-            return "/data/local/tmp/curl"
+            _executar_adb(["push", local_bin, "/data/local/tmp/curl"], serial=serial, timeout=25)
+            _executar_adb(["shell", "chmod 755 /data/local/tmp/curl"], serial=serial, timeout=5)
+            res = _executar_adb(["shell", "/data/local/tmp/curl -V"], serial=serial, timeout=4)
+            if res and res.returncode == 0:
+                return "/data/local/tmp/curl"
         except Exception:
             pass
 
@@ -1874,37 +1889,84 @@ def obter_ip_celular(serial=None):
         _executar_adb(["shell", "svc wifi disable"], serial=serial, timeout=3)
         _executar_adb(["shell", "svc data enable"], serial=serial, timeout=3)
 
-        # 1. Tenta múltiplos utilitários HTTP nativos em comando único encadeado
+        curl_bin = _garantir_curl_device(serial)
+
+        # Endpoints dedicados para IPv4 (compatíveis com CGNAT e operadoras móveis)
+        endpoints = [
+            "api4.ipify.org",
+            "ipv4.icanhazip.com",
+            "checkip.amazonaws.com",
+            "v4.ident.me"
+        ]
+
+        import socket
+
+        # Estratégia 1: Resolução de DNS no host (PC) + Requisição via IP com Header Host
+        # Essencial para Android sem /etc/resolv.conf (Samsung Galaxy S20, etc. com curl estático)
+        if curl_bin:
+            for domain in endpoints:
+                try:
+                    resolved_ip = socket.gethostbyname(domain)
+                    # Método 1A: Host Header direto
+                    cmd = f"{curl_bin} -s -4 --max-time 3 -H Host:{domain} http://{resolved_ip}"
+                    res = _executar_adb(["shell", cmd], serial=serial, timeout=4)
+                    if res and res.stdout:
+                        m = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', res.stdout)
+                        if m:
+                            return m.group(0).strip()
+
+                    # Método 1B: flag --resolve
+                    cmd_res = f"{curl_bin} -s -4 --max-time 3 --resolve {domain}:80:{resolved_ip} http://{domain}"
+                    res_r = _executar_adb(["shell", cmd_res], serial=serial, timeout=4)
+                    if res_r and res_r.stdout:
+                        m = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', res_r.stdout)
+                        if m:
+                            return m.group(0).strip()
+                except Exception:
+                    continue
+
+        # Estratégia 2: Domínio direto caso o aparelho tenha DNS nativo funcionando no curl
+        if curl_bin:
+            for domain in endpoints:
+                try:
+                    cmd_direct = f"{curl_bin} -s -4 --max-time 3 http://{domain}"
+                    res = _executar_adb(["shell", cmd_direct], serial=serial, timeout=4)
+                    if res and res.stdout:
+                        m = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', res.stdout)
+                        if m:
+                            return m.group(0).strip()
+                except Exception:
+                    continue
+
+        # Estratégia 3: Encadeamento de fallback com toybox/wget nativo
         sh_cmd = (
-            "curl -s --max-time 3 http://api.ipify.org || "
-            "/data/local/tmp/curl -s --max-time 3 http://api.ipify.org || "
             "toybox wget -q -O - http://api.ipify.org || "
             "wget -q -O - http://api.ipify.org || "
-            "curl -s --max-time 3 http://icanhazip.com || "
-            "toybox wget -q -O - http://icanhazip.com || "
-            "curl -s --max-time 3 http://ifconfig.me/ip"
+            "toybox wget -q -O - http://icanhazip.com"
         )
-        res = _executar_adb(["shell", sh_cmd], serial=serial, timeout=7)
-        if res and res.stdout:
-            match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', res.stdout)
-            if match:
-                return match.group(0)
+        res_fb = _executar_adb(["shell", sh_cmd], serial=serial, timeout=5)
+        if res_fb and res_fb.stdout:
+            m = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', res_fb.stdout)
+            if m:
+                return m.group(0).strip()
 
-        # 2. Se falhar, tenta garantir o curl estático e reexecuta
-        curl_bin = _garantir_curl_device(serial)
+        # Estratégia 4: Suporte a IPv6 caso a operadora forneça IPv6 nativo exclusivo
         if curl_bin:
-            res = _executar_adb(["shell", f"{curl_bin} -s --max-time 3 http://api.ipify.org"], serial=serial, timeout=5)
-            if res and res.stdout:
-                match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', res.stdout)
-                if match:
-                    return match.group(0)
+            try:
+                res_v6 = _executar_adb(["shell", f"{curl_bin} -s --max-time 3 http://icanhazip.com"], serial=serial, timeout=4)
+                if res_v6 and res_v6.stdout:
+                    m = re.search(r'\b(?:[0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}\b', res_v6.stdout)
+                    if m:
+                        return m.group(0).strip()
+            except Exception:
+                pass
 
         return None
 
     # Fallback PC: APENAS quando serial NÃO foi informado (automação rodando no PC sem celular)
     try:
         import requests
-        for url in ["https://api.ipify.org", "http://icanhazip.com", "http://ifconfig.me/ip"]:
+        for url in ["https://api4.ipify.org", "https://api.ipify.org", "http://ipv4.icanhazip.com", "http://checkip.amazonaws.com"]:
             r = requests.get(url, timeout=3)
             if r.status_code == 200:
                 match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', r.text)
@@ -1976,11 +2038,11 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
 
             # 2. Identifica e loga o IP atual/novo
             ip_novo = None
-            for _ in range(5):
+            for _ in range(6):
                 ip_novo = obter_ip_celular(serial)
                 if ip_novo:
                     break
-                time.sleep(1.0)
+                time.sleep(1.2)
 
             if ip_novo:
                 if log_cb: log_cb(f"📍 IP atual: {ip_novo}")
@@ -3631,12 +3693,11 @@ def obter_info_dispositivo(serial):
     return info
 
 def listar_dispositivos_adb():
-    try:
-        out = subprocess.check_output("adb devices", shell=True, stderr=subprocess.DEVNULL, timeout=3).decode()
-    except Exception:
+    res = _executar_adb(["devices"], timeout=4)
+    if not res or not res.stdout:
         return []
 
-    linhas = [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("List")]
+    linhas = [l.strip() for l in res.stdout.splitlines() if l.strip() and not l.startswith("List")]
     dispositivos = []
     for l in linhas:
         partes = l.split()
@@ -3678,6 +3739,12 @@ class MobileDeviceWorker:
         self.current_browser = None
         self.current_pw = None
         self.contas_criadas = 0
+
+        # Prepara de forma assíncrona o binário de curl para que esteja pronto no primeiro ciclo
+        try:
+            threading.Thread(target=_garantir_curl_device, args=(self.serial,), daemon=True).start()
+        except Exception:
+            pass
 
     def checar_pausa(self):
         while (self.paused or (self.manager and self.manager.paused)) and self.running and (self.manager and self.manager.running):
@@ -3812,10 +3879,9 @@ class MobileDeviceWorker:
             self.log(f"⚠️ Erro ao abrir Scrcpy: {e}")
 
     def aguardar_dispositivo_usb(self, timeout=60):
-        adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
         try:
-            out = subprocess.check_output(f"{adb_cmd} get-state", shell=True, stderr=subprocess.DEVNULL).decode()
-            if "device" in out:
+            res = _executar_adb(["get-state"], serial=self.serial, timeout=3)
+            if res and "device" in (res.stdout or ""):
                 return True
         except Exception:
             pass
@@ -3823,8 +3889,8 @@ class MobileDeviceWorker:
         inicio = time.time()
         while time.time() - inicio < timeout and self.running and self.manager.running:
             try:
-                out = subprocess.check_output(f"{adb_cmd} get-state", shell=True, stderr=subprocess.DEVNULL).decode()
-                if "device" in out:
+                res = _executar_adb(["get-state"], serial=self.serial, timeout=3)
+                if res and "device" in (res.stdout or ""):
                     self.log("🔌 Celular USB reconectado com sucesso!")
                     time.sleep(2)
                     self.abrir_scrcpy()
@@ -3934,11 +4000,11 @@ class MobileDeviceWorker:
 
                 # 4. Obtém o novo IP e compara obrigatoriamente exibindo antigo e atual
                 ip_novo = None
-                for _ in range(5):
+                for _ in range(6):
                     ip_novo = self.obter_ip_celular()
                     if ip_novo:
                         break
-                    time.sleep(1.0)
+                    time.sleep(1.2)
 
                 if ip_novo:
                     self.log(f"📍 IP atual: {ip_novo}")
@@ -3952,13 +4018,16 @@ class MobileDeviceWorker:
                     else:
                         self.log(f"✅ IP 4G conectado: {ip_novo}")
                     return True
-                elif conectou:
-                    self.log("✅ Conexão 4G restabelecida com sucesso!")
-                    return True
                 else:
                     if tentativa < max_tentativas:
-                        self.log(f"⚠️ Aguardando sincronização com a torre da operadora [Tentativa {tentativa}/{max_tentativas}]...")
+                        self.log(f"⚠️ IP novo ainda não sincronizado pela operadora [Tentativa {tentativa}/{max_tentativas}]. Repetindo ciclo...")
                         continue
+                    elif conectou:
+                        self.log("✅ Conexão 4G restabelecida com sucesso!")
+                        return True
+                    else:
+                        self.log("✅ Conexão 4G reiniciada! Prosseguindo com o fluxo...")
+                        return True
 
             except Exception as e:
                 self.log(f"⚠️ Erro no ciclo de rotação: {e}")
