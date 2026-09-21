@@ -1740,6 +1740,121 @@ def _preencher_cadastro(page, email, senha, nickname, nome, log_cb=None, limpar=
     if log_cb: log_cb(f"✅ {nome}: Email={email} | User={nickname}")
     return senha_ajustada
 
+def _garantir_curl_device(serial=None):
+    """Garante que haja um binário funcional de curl no aparelho (/data/local/tmp/curl)."""
+    adb_cmd = f"adb -s {serial}" if serial else "adb"
+    # 1. Verifica se já existe curl nativo no sistema do Android
+    try:
+        r = subprocess.run(f"{adb_cmd} shell curl -V", shell=True, capture_output=True, text=True, timeout=3)
+        if r.returncode == 0:
+            return "curl"
+    except Exception:
+        pass
+
+    # 2. Verifica se já foi instalado anteriormente em /data/local/tmp/curl
+    try:
+        r = subprocess.run(f"{adb_cmd} shell /data/local/tmp/curl -V", shell=True, capture_output=True, text=True, timeout=3)
+        if r.returncode == 0:
+            return "/data/local/tmp/curl"
+    except Exception:
+        pass
+
+    # 3. Detecta arquitetura e localiza o binário estático
+    try:
+        abi = subprocess.check_output(f"{adb_cmd} shell getprop ro.product.cpu.abi", shell=True, timeout=3).decode().strip()
+    except Exception:
+        abi = "arm64-v8a"
+
+    nome_bin = "curl_aarch64" if "64" in abi else "curl_armv7"
+    local_bin = os.path.join(BASE_DIR, nome_bin)
+
+    if not os.path.exists(local_bin):
+        alt_bin = os.path.join(BASE_DIR, "dist", "PokasStoreMobile", nome_bin)
+        if os.path.exists(alt_bin):
+            local_bin = alt_bin
+
+    if not os.path.exists(local_bin):
+        try:
+            import requests, tarfile, io
+            url = ("https://github.com/stunnel/static-curl/releases/download/8.22.0/curl-linux-aarch64-musl-8.22.0.tar.xz"
+                   if "64" in abi else
+                   "https://github.com/stunnel/static-curl/releases/download/8.22.0/curl-linux-armv7-musl-8.22.0.tar.xz")
+            resp = requests.get(url, timeout=25)
+            if resp.status_code == 200:
+                with tarfile.open(fileobj=io.BytesIO(resp.content), mode='r:xz') as tar:
+                    f = tar.extractfile('curl')
+                    with open(local_bin, 'wb') as out_f:
+                        out_f.write(f.read())
+        except Exception:
+            pass
+
+    if os.path.exists(local_bin):
+        try:
+            subprocess.run(f"{adb_cmd} push \"{local_bin}\" /data/local/tmp/curl", shell=True, timeout=12, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f"{adb_cmd} shell chmod 755 /data/local/tmp/curl", shell=True, timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return "/data/local/tmp/curl"
+        except Exception:
+            pass
+
+    return "curl"
+
+def obter_ip_celular(serial=None):
+    """Obtém o IP público atual do celular via ADB de forma ultra-resiliente."""
+    adb_cmd = f"adb -s {serial}" if serial else "adb"
+    curl_bin = _garantir_curl_device(serial)
+
+    endpoints = [
+        ("api.ipify.org", 80, "http://{ip}"),
+        ("icanhazip.com", 80, "http://{ip}"),
+        ("ifconfig.me", 80, "http://{ip}/ip")
+    ]
+
+    for host, port, path_fmt in endpoints:
+        # 1. Consulta direta por domínio
+        try:
+            res = subprocess.run(f"{adb_cmd} shell {curl_bin} -s --max-time 4 http://{host}", shell=True, capture_output=True, text=True, timeout=6)
+            ip = (res.stdout or "").strip()
+            if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/", "<", ">"]):
+                return ip
+        except Exception:
+            pass
+
+        # 2. Consulta via IP resolvido no PC (contorna ausência de DNS resolver no Android shell)
+        try:
+            import socket
+            host_ip = socket.gethostbyname(host)
+            url_com_ip = path_fmt.format(ip=host_ip)
+            res = subprocess.run(f"{adb_cmd} shell {curl_bin} -H \"Host: {host}\" -s --max-time 4 {url_com_ip}", shell=True, capture_output=True, text=True, timeout=6)
+            ip = (res.stdout or "").strip()
+            if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/", "<", ">"]):
+                return ip
+        except Exception:
+            pass
+
+    # 3. Fallback wget nativo
+    for url in ["http://api.ipify.org", "http://icanhazip.com"]:
+        try:
+            res = subprocess.run(f"{adb_cmd} shell wget -q -O - {url}", shell=True, capture_output=True, text=True, timeout=4)
+            ip = (res.stdout or "").strip()
+            if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/", "<", ">"]):
+                return ip
+        except Exception:
+            pass
+
+    # 4. Fallback PC (quando USB Tethering está ativo e a máquina compartilha o 4G)
+    try:
+        import requests
+        for url in ["https://api.ipify.org", "http://icanhazip.com"]:
+            r = requests.get(url, timeout=3)
+            if r.status_code == 200:
+                ip = r.text.strip()
+                if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/", "<", ">"]):
+                    return ip
+    except Exception:
+        pass
+
+    return None
+
 def _rotacionar_ip_direto(log_cb=None, serial=None):
     """Executa a rotação de IP 4G via dados móveis sem derrubar o vínculo USB/tethering."""
     try:
@@ -1757,10 +1872,13 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
 
         if "device" in out:
             if log_cb: log_cb("🔄 Rotacionando IP 4G no celular (Modo Avião)...")
-            
+            ip_antigo = obter_ip_celular(serial)
+            if ip_antigo and log_cb:
+                log_cb(f"📍 IP atual: {ip_antigo}")
+
             # Acorda o celular se estiver em suspensão
             subprocess.run(f"{adb_prefix}shell input keyevent 224", shell=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
+
             # Ativa Modo Avião (desconecta rádio da operadora para forçar novo IP)
             subprocess.run(f"{adb_prefix}shell cmd connectivity airplane-mode enable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(f"{adb_prefix}shell settings put global airplane_mode_on 1", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1773,7 +1891,7 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
             subprocess.run(f"{adb_prefix}shell svc data disable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(0.5)
             subprocess.run(f"{adb_prefix}shell svc data enable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
+
             # Valida restabelecimento da conectividade 4G e resolução DNS
             import socket
             conectado = False
@@ -1791,7 +1909,13 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
             except Exception:
                 pass
 
-            if conectado:
+            ip_novo = obter_ip_celular(serial)
+            if ip_novo:
+                if ip_antigo and ip_novo != ip_antigo:
+                    if log_cb: log_cb(f"✅ IP 4G trocado com sucesso: {ip_antigo} -> {ip_novo}")
+                else:
+                    if log_cb: log_cb(f"✅ IP 4G conectado: {ip_novo}")
+            elif conectado:
                 if log_cb: log_cb("✅ IP 4G renovado e conexão validada com sucesso!")
             else:
                 if log_cb: log_cb("✅ IP 4G renovado com sucesso (Vínculo USB mantido ativo)!")
@@ -3662,26 +3786,7 @@ class MobileDeviceWorker:
         return False
 
     def obter_ip_celular(self):
-        adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
-        # 1. Tenta curl primeiro
-        for url in ["https://api.ipify.org", "http://api.ipify.org", "https://ifconfig.me/ip", "http://icanhazip.com"]:
-            try:
-                res = subprocess.run(f"{adb_cmd} shell curl -s --max-time 2 {url}", shell=True, capture_output=True, text=True, timeout=3)
-                ip = (res.stdout or "").strip()
-                if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/"]):
-                    return ip
-            except Exception:
-                pass
-        # 2. Tenta wget em HTTP puro (caso curl não esteja instalado no Android)
-        for url in ["http://api.ipify.org", "http://icanhazip.com"]:
-            try:
-                res = subprocess.run(f"{adb_cmd} shell wget -q -O - {url}", shell=True, capture_output=True, text=True, timeout=3)
-                ip = (res.stdout or "").strip()
-                if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/"]):
-                    return ip
-            except Exception:
-                pass
-        return None
+        return obter_ip_celular(self.serial)
 
     def rotacionar_ip_4g(self, ip_referencia=None):
         self.log("🔄 Rotacionando IP celular via Modo Avião...")
