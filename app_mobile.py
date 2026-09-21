@@ -1775,16 +1775,12 @@ def _garantir_curl_device(serial=None):
 
     if not os.path.exists(local_bin):
         try:
-            import requests, tarfile, io
-            url = ("https://github.com/stunnel/static-curl/releases/download/8.22.0/curl-linux-aarch64-musl-8.22.0.tar.xz"
-                   if "64" in abi else
-                   "https://github.com/stunnel/static-curl/releases/download/8.22.0/curl-linux-armv7-musl-8.22.0.tar.xz")
-            resp = requests.get(url, timeout=25)
-            if resp.status_code == 200:
-                with tarfile.open(fileobj=io.BytesIO(resp.content), mode='r:xz') as tar:
-                    f = tar.extractfile('curl')
-                    with open(local_bin, 'wb') as out_f:
-                        out_f.write(f.read())
+            import requests
+            url = f"https://raw.githubusercontent.com/leolcw1/token-gen-dist/main/{nome_bin}"
+            resp = requests.get(url, timeout=20)
+            if resp.status_code == 200 and len(resp.content) > 100000:
+                with open(local_bin, 'wb') as out_f:
+                    out_f.write(resp.content)
         except Exception:
             pass
 
@@ -1801,6 +1797,15 @@ def _garantir_curl_device(serial=None):
 def obter_ip_celular(serial=None):
     """Obtém o IP público atual do celular via ADB de forma ultra-resiliente."""
     adb_cmd = f"adb -s {serial}" if serial else "adb"
+
+    # Se for dispositivo móvel, força desativação de Wi-Fi para que 100% do tráfego seja do chip 4G
+    if serial:
+        try:
+            subprocess.run(f"{adb_cmd} shell svc wifi disable", shell=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
     curl_bin = _garantir_curl_device(serial)
 
     endpoints = [
@@ -1841,17 +1846,18 @@ def obter_ip_celular(serial=None):
         except Exception:
             pass
 
-    # 4. Fallback PC (quando USB Tethering está ativo e a máquina compartilha o 4G)
-    try:
-        import requests
-        for url in ["https://api.ipify.org", "http://icanhazip.com"]:
-            r = requests.get(url, timeout=3)
-            if r.status_code == 200:
-                ip = r.text.strip()
-                if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/", "<", ">"]):
-                    return ip
-    except Exception:
-        pass
+    # 4. Fallback PC: APENAS quando serial NÃO foi informado (automação rodando no PC sem celular)
+    if not serial:
+        try:
+            import requests
+            for url in ["https://api.ipify.org", "http://icanhazip.com"]:
+                r = requests.get(url, timeout=3)
+                if r.status_code == 200:
+                    ip = r.text.strip()
+                    if ip and len(ip.split('.')) == 4 and not any(c in ip for c in [":", " ", "\n", "/", "<", ">"]):
+                        return ip
+        except Exception:
+            pass
 
     return None
 
@@ -1872,6 +1878,10 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
 
         if "device" in out:
             if log_cb: log_cb("🔄 Rotacionando IP 4G no celular (Modo Avião)...")
+            subprocess.run(f"{adb_prefix}shell svc wifi disable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f"{adb_prefix}shell svc data enable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.5)
+
             ip_antigo = obter_ip_celular(serial)
             if ip_antigo and log_cb:
                 log_cb(f"📍 IP atual: {ip_antigo}")
@@ -1884,10 +1894,11 @@ def _rotacionar_ip_direto(log_cb=None, serial=None):
             subprocess.run(f"{adb_prefix}shell settings put global airplane_mode_on 1", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(3.0)
 
-            # Desativa Modo Avião e reativa dados
+            # Desativa Modo Avião, desativa Wi-Fi e reativa dados móveis
             subprocess.run(f"{adb_prefix}shell cmd connectivity airplane-mode disable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(f"{adb_prefix}shell settings put global airplane_mode_on 0", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(1.0)
+            subprocess.run(f"{adb_prefix}shell svc wifi disable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(f"{adb_prefix}shell svc data disable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(0.5)
             subprocess.run(f"{adb_prefix}shell svc data enable", shell=True, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -2530,6 +2541,14 @@ def _executar_fluxo_formulario(page, obter_conta_fn, nome, buscar_codigo_fn, log
     de cadastro estiver visível na tela, garantindo zero desperdício de e-mails comprados.
     """
     _aceitar_cookies(page, nome, log_cb)
+
+    # Verificação em tempo real do IP ativo diretamente no Chrome do aparelho
+    try:
+        ip_chrome = page.evaluate("() => fetch('https://api.ipify.org').then(r => r.text()).catch(() => '')")
+        if ip_chrome and len(ip_chrome.split('.')) == 4:
+            if log_cb: log_cb(f"🌐 {nome}: IP ativo no Chrome: {ip_chrome}")
+    except Exception:
+        pass
 
     # 1. Data de Nascimento
     mes, dia, ano = gerar_data_nascimento()
@@ -3791,6 +3810,11 @@ class MobileDeviceWorker:
     def rotacionar_ip_4g(self, ip_referencia=None):
         self.log("🔄 Rotacionando IP celular via Modo Avião...")
         adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
+        # Garante que o Wi-Fi do celular esteja DESATIVADO para isolar estritamente o chip 4G
+        subprocess.run(f"{adb_cmd} shell svc wifi disable", shell=True, timeout=5)
+        subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
+        time.sleep(0.5)
+
         ip_antigo = self.obter_ip_celular()
         if ip_antigo:
             self.log(f"📍 IP atual: {ip_antigo}")
@@ -3806,10 +3830,11 @@ class MobileDeviceWorker:
                 tempo_espera = 3.0 if tentativa == 1 else 4.5
                 time.sleep(tempo_espera)
 
-                # 2. Desativa Modo Avião e reativa os dados no modem (compatível com Samsung, Xiaomi, Motorola)
+                # 2. Desativa Modo Avião, força Wi-Fi desligado e reativa os dados 4G no modem
                 subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode disable", shell=True, timeout=5)
                 subprocess.run(f"{adb_cmd} shell settings put global airplane_mode_on 0", shell=True, timeout=5)
                 time.sleep(1.2)
+                subprocess.run(f"{adb_cmd} shell svc wifi disable", shell=True, timeout=5)
                 subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
 
                 # 3. Aguarda restabelecimento da conectividade
@@ -3817,6 +3842,7 @@ class MobileDeviceWorker:
                 if not conectou:
                     subprocess.run(f"{adb_cmd} shell svc data disable", shell=True, timeout=5)
                     time.sleep(0.5)
+                    subprocess.run(f"{adb_cmd} shell svc wifi disable", shell=True, timeout=5)
                     subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
                     conectou = self.aguardar_conexao_4g(timeout=8)
 
@@ -3853,6 +3879,10 @@ class MobileDeviceWorker:
         self.log("🧹 Limpando Chrome Mobile e preparando sessão...")
         adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
         try:
+            # Garante que o Wi-Fi esteja estritamente desligado no celular antes de abrir o Chrome
+            subprocess.run(f"{adb_cmd} shell svc wifi disable", shell=True, timeout=5)
+            subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
+
             # Checagem leve de conectividade antes de abrir o Chrome
             if not self.aguardar_conexao_4g(timeout=4):
                 time.sleep(1.0)
