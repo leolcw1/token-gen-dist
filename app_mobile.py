@@ -3613,26 +3613,28 @@ class MobileDeviceWorker:
                 pass
         return None
 
-    def rotacionar_ip_4g(self):
+    def rotacionar_ip_4g(self, ip_referencia=None):
         self.log("🔄 Rotacionando IP celular via Modo Avião...")
         adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
         ip_antigo = self.obter_ip_celular()
         if ip_antigo:
             self.log(f"📍 IP atual: {ip_antigo}")
+        ref = ip_referencia or ip_antigo
 
-        for tentativa in range(1, 3):
+        max_tentativas = 4 if ip_referencia else 2
+        for tentativa in range(1, max_tentativas + 1):
             try:
                 # 1. Ativa Modo Avião (desconecta rádio da operadora)
                 subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode enable", shell=True, timeout=5)
                 subprocess.run(f"{adb_cmd} shell settings put global airplane_mode_on 1", shell=True, timeout=5)
                 
-                tempo_espera = 2.5 if tentativa == 1 else 3.5
+                tempo_espera = 3.0 if tentativa == 1 else 4.5
                 time.sleep(tempo_espera)
 
                 # 2. Desativa Modo Avião e reativa os dados no modem (compatível com Samsung, Xiaomi, Motorola)
                 subprocess.run(f"{adb_cmd} shell cmd connectivity airplane-mode disable", shell=True, timeout=5)
                 subprocess.run(f"{adb_cmd} shell settings put global airplane_mode_on 0", shell=True, timeout=5)
-                time.sleep(1.0)
+                time.sleep(1.2)
                 subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
 
                 # 3. Aguarda restabelecimento da conectividade
@@ -3646,10 +3648,10 @@ class MobileDeviceWorker:
                 # Se obteve IP novo, valida a troca
                 ip_novo = self.obter_ip_celular()
                 if ip_novo:
-                    if ip_antigo and ip_novo == ip_antigo and tentativa < 2:
-                        self.log(f"⚠️ Operadora manteve o mesmo IP ({ip_novo}) [Tentativa {tentativa}/2]. Repetindo ciclo...")
+                    if ref and ip_novo == ref and tentativa < max_tentativas:
+                        self.log(f"⚠️ Operadora manteve o mesmo IP ({ip_novo}) [Tentativa {tentativa}/{max_tentativas}]. Repetindo ciclo...")
                         continue
-                    if ip_antigo:
+                    if ip_antigo and ip_novo != ip_antigo:
                         self.log(f"✅ IP 4G trocado com sucesso: {ip_antigo} -> {ip_novo}")
                     else:
                         self.log(f"✅ IP 4G conectado: {ip_novo}")
@@ -3658,8 +3660,8 @@ class MobileDeviceWorker:
                     self.log("✅ IP 4G conectado e validado!")
                     return True
                 else:
-                    if tentativa < 2:
-                        self.log(f"⚠️ Aguardando sincronização com a torre da operadora [Tentativa {tentativa}/2]...")
+                    if tentativa < max_tentativas:
+                        self.log(f"⚠️ Aguardando sincronização com a torre da operadora [Tentativa {tentativa}/{max_tentativas}]...")
                         continue
 
             except Exception as e:
@@ -3798,8 +3800,11 @@ class MobileDeviceWorker:
                 else:
                     # Tratamento do erro #1.500.7 ("Sorry, we are unable to handle your request at this time")
                     if getattr(self, "ultimo_status", "") == "IP_BLOQUEADO":
+                        ip_bloqueado = self.obter_ip_celular()
                         self.log("🛑 Bloqueio #1.500.7 (Unable to handle request) detectado neste aparelho!")
-                        self.log("🛑 Fechando fluxo neste aparelho e rotacionando IP 4G...")
+                        if ip_bloqueado:
+                            self.log(f"🚫 IP bloqueado registrado: {ip_bloqueado}")
+                        self.log("🛑 Fechando fluxo e limpando navegador neste aparelho...")
                         try:
                             if self.current_browser:
                                 self.current_browser.close()
@@ -3814,22 +3819,23 @@ class MobileDeviceWorker:
                         except Exception:
                             pass
 
-                        self.rotacionar_ip_4g()
-
-                        self.log("☕ Aguardando 5 minutos (300s) para esfriar o aparelho antes de voltar com outro e-mail...")
+                        self.log("☕ Aguardando 5 minutos (300s) para esfriar o aparelho antes de reiniciar...")
                         for sec in range(300, 0, -1):
                             if not self.running or not self.manager.running:
                                 break
                             while (self.paused or self.manager.paused) and self.running and self.manager.running:
                                 time.sleep(1)
                             if sec in [300, 240, 180, 120, 60, 30, 10]:
-                                self.log(f"⏳ Cooldown #1.500.7: Retomando fluxo em {sec}s com novo e-mail...")
+                                self.log(f"⏳ Cooldown #1.500.7: Retomando fluxo em {sec}s...")
                             time.sleep(1)
 
                         if not self.running or not self.manager.running:
                             break
 
-                        self.log("🚀 5 minutos concluídos! Retomando automação neste aparelho com novo e-mail...")
+                        self.log("🚀 Intervalo concluído! Trocando para um IP diferente antes de reiniciar o processo...")
+                        self.rotacionar_ip_4g(ip_referencia=ip_bloqueado)
+                        self.ultimo_status = ""
+                        self.log("▶️ Processo reiniciado com novo IP e novo e-mail!")
                         continue
 
         except Exception as e:
@@ -4164,7 +4170,7 @@ class MobileManager:
                     else:
                         if getattr(self, "ultimo_status", "") == "IP_BLOQUEADO":
                             self.log("🛑 Bloqueio #1.500.7 (Unable to handle request) detectado no PC!")
-                            self.log("🛑 Fechando navegador e rotacionando proxy...")
+                            self.log("🛑 Fechando navegador e limpando sessão...")
                             try:
                                 if self.current_browser:
                                     self.current_browser.close()
@@ -4172,18 +4178,20 @@ class MobileManager:
                                 pass
                             self.current_browser = None
                             executar_limpeza_estilo_revo(self.log)
-                            if self.tipo_execucao == "pc_4g":
-                                rotacionar_ip_dataimpulse(self.log)
-                            self.log("☕ Aguardando 5 minutos (300s) para esfriar antes de voltar com outro e-mail...")
+                            self.log("☕ Aguardando intervalo de 5 minutos (300s) para esfriar antes de reiniciar...")
                             for sec in range(300, 0, -1):
                                 if not self.running:
                                     break
                                 if sec in [300, 240, 180, 120, 60, 30, 10]:
-                                    self.log(f"⏳ Cooldown #1.500.7: Retomando fluxo em {sec}s com novo e-mail...")
+                                    self.log(f"⏳ Cooldown #1.500.7: Retomando fluxo em {sec}s...")
                                 time.sleep(1)
                             if self.running:
-                                self.log("🚀 5 minutos concluídos! Retomando automação no PC com novo e-mail...")
-                            continue
+                                self.log("🚀 Intervalo concluído! Trocando IP antes de reiniciar o processo...")
+                                if self.tipo_execucao == "pc_4g":
+                                    rotacionar_ip_dataimpulse(self.log)
+                                self.ultimo_status = ""
+                                self.log("▶️ Retomando processo no PC com novo IP e novo e-mail...")
+                                continue
 
                     if self.stats_cb:
                         self.stats_cb()
