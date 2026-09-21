@@ -15,6 +15,23 @@ import hashlib
 import calendar
 import threading
 import subprocess
+
+# Suprime globalmente abertura de janelas de console (CMD/ADB) no Windows
+if sys.platform == "win32":
+    _orig_popen = subprocess.Popen
+    def _silent_popen(*args, **kwargs):
+        if "creationflags" not in kwargs:
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        else:
+            kwargs["creationflags"] |= subprocess.CREATE_NO_WINDOW
+        if "startupinfo" not in kwargs or kwargs["startupinfo"] is None:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = subprocess.SW_HIDE
+            kwargs["startupinfo"] = si
+        return _orig_popen(*args, **kwargs)
+    subprocess.Popen = _silent_popen
+
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -1776,7 +1793,7 @@ def _obter_adb_bin():
     return "adb"
 
 def _executar_adb(args, serial=None, timeout=5):
-    """Executa comando ADB diretamente via lista de argumentos sem shell escaping."""
+    """Executa comando ADB diretamente via lista de argumentos sem abrir janelas CMD no Windows."""
     adb_bin = _obter_adb_bin()
     cmd = [adb_bin]
     if serial:
@@ -1785,8 +1802,24 @@ def _executar_adb(args, serial=None, timeout=5):
         cmd.extend(args)
     else:
         cmd.extend(args.split())
+
+    creationflags = 0
+    startupinfo = None
+    if sys.platform == "win32":
+        creationflags = subprocess.CREATE_NO_WINDOW
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=creationflags,
+            startupinfo=startupinfo
+        )
     except Exception:
         return None
 
@@ -3803,76 +3836,52 @@ class MobileDeviceWorker:
 
     def aguardar_conexao_4g(self, timeout=14):
         inicio = time.time()
-        adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
         while time.time() - inicio < timeout:
             if not self.running or not self.manager.running:
                 return False
 
-            # Teste 1: Ping com resolução DNS em google.com (toybox ping nativo em 100% dos Androids)
+            # Teste 1: Ping com resolução DNS em google.com
             try:
-                res_ping = subprocess.run(
-                    f"{adb_cmd} shell ping -c 1 -w 2 google.com",
-                    shell=True, capture_output=True, text=True, timeout=3.0
-                )
-                out_p = (res_ping.stdout or "") + (res_ping.stderr or "")
-                if "bytes from" in out_p or "1 received" in out_p or "1 packets received" in out_p or "PING google.com (" in out_p:
-                    return True
+                res_ping = _executar_adb(["shell", "ping -c 1 -w 2 google.com"], serial=self.serial, timeout=3.0)
+                if res_ping and res_ping.stdout:
+                    out_p = res_ping.stdout
+                    if "bytes from" in out_p or "1 received" in out_p or "1 packets received" in out_p or "PING google.com (" in out_p:
+                        return True
             except Exception:
                 pass
 
             # Teste 2: Ping direto no IP 8.8.8.8
             try:
-                res_p2 = subprocess.run(
-                    f"{adb_cmd} shell ping -c 1 -w 2 8.8.8.8",
-                    shell=True, capture_output=True, text=True, timeout=3.0
-                )
-                out_p2 = res_p2.stdout or ""
-                if "bytes from" in out_p2 or "1 received" in out_p2 or "1 packets received" in out_p2:
+                res_p2 = _executar_adb(["shell", "ping -c 1 -w 2 8.8.8.8"], serial=self.serial, timeout=3.0)
+                if res_p2 and res_p2.stdout:
+                    out_p2 = res_p2.stdout
+                    if "bytes from" in out_p2 or "1 received" in out_p2 or "1 packets received" in out_p2:
+                        return True
+            except Exception:
+                pass
+
+            # Teste 3: Status nativo do ConnectivityManager do Android
+            try:
+                res_conn = _executar_adb(["shell", "cmd connectivity is-active"], serial=self.serial, timeout=2.5)
+                if res_conn and (res_conn.stdout or "").strip().lower() == "true":
                     return True
             except Exception:
                 pass
 
-            # Teste 3: Status nativo do ConnectivityManager do Android (sem depender de binários externos)
+            # Teste 4: Dumpsys connectivity
             try:
-                res_conn = subprocess.run(
-                    f"{adb_cmd} shell cmd connectivity is-active",
-                    shell=True, capture_output=True, text=True, timeout=2.5
-                )
-                if (res_conn.stdout or "").strip().lower() == "true":
-                    return True
+                res_dump = _executar_adb(["shell", "dumpsys connectivity"], serial=self.serial, timeout=3.0)
+                if res_dump and res_dump.stdout:
+                    out_d = res_dump.stdout
+                    if "CONNECTED/CONNECTED" in out_d or "state: CONNECTED" in out_d or "NET_CAPABILITY_VALIDATED" in out_d:
+                        return True
             except Exception:
                 pass
 
-            # Teste 4: Dumpsys connectivity (detecta estado de rede celular conectada/validada)
+            # Teste 5: curl HTTP 204
             try:
-                res_dump = subprocess.run(
-                    f"{adb_cmd} shell dumpsys connectivity",
-                    shell=True, capture_output=True, text=True, timeout=3.0
-                )
-                out_d = res_dump.stdout or ""
-                if "CONNECTED/CONNECTED" in out_d or "state: CONNECTED" in out_d or "NET_CAPABILITY_VALIDATED" in out_d:
-                    return True
-            except Exception:
-                pass
-
-            # Teste 5: curl HTTP 204 (se o celular tiver curl instalado)
-            try:
-                res = subprocess.run(
-                    f"{adb_cmd} shell curl -s -I --max-time 2 http://connectivitycheck.gstatic.com/generate_204",
-                    shell=True, capture_output=True, text=True, timeout=3.0
-                )
-                if "204" in (res.stdout or "") or "HTTP/" in (res.stdout or ""):
-                    return True
-            except Exception:
-                pass
-
-            # Teste 6: wget HTTP 204 (se o celular tiver wget instalado)
-            try:
-                res_w = subprocess.run(
-                    f"{adb_cmd} shell wget -q -O - http://connectivitycheck.gstatic.com/generate_204",
-                    shell=True, capture_output=True, text=True, timeout=3.0
-                )
-                if res_w.returncode == 0:
+                res = _executar_adb(["shell", "curl -s -I --max-time 2 http://connectivitycheck.gstatic.com/generate_204"], serial=self.serial, timeout=3.0)
+                if res and ("204" in (res.stdout or "") or "HTTP/" in (res.stdout or "")):
                     return True
             except Exception:
                 pass
@@ -3963,44 +3972,43 @@ class MobileDeviceWorker:
         if not self.running or not self.manager.running:
             return
         self.log("🧹 Limpando Chrome Mobile e preparando sessão...")
-        adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
         try:
             # Garante que o Wi-Fi esteja estritamente desligado no celular antes de abrir o Chrome
-            subprocess.run(f"{adb_cmd} shell svc wifi disable", shell=True, timeout=5)
-            subprocess.run(f"{adb_cmd} shell svc data enable", shell=True, timeout=5)
+            _executar_adb(["shell", "svc wifi disable"], serial=self.serial, timeout=5)
+            _executar_adb(["shell", "svc data enable"], serial=self.serial, timeout=5)
 
             # Checagem leve de conectividade antes de abrir o Chrome
             if not self.aguardar_conexao_4g(timeout=4):
                 time.sleep(1.0)
 
-            subprocess.run(f"{adb_cmd} shell pm clear com.android.chrome", shell=True, timeout=10)
+            _executar_adb(["shell", "pm clear com.android.chrome"], serial=self.serial, timeout=10)
             if not self.running or not self.manager.running: return
             time.sleep(0.5)
             if not self.running or not self.manager.running: return
-            subprocess.run(f"{adb_cmd} shell settings put secure autofill_service null", shell=True, timeout=5)
-            subprocess.run(f"{adb_cmd} shell settings put secure credential_service null", shell=True, timeout=5)
-            subprocess.run(f"{adb_cmd} shell settings put secure credential_service_primary null", shell=True, timeout=5)
+            _executar_adb(["shell", "settings put secure autofill_service null"], serial=self.serial, timeout=5)
+            _executar_adb(["shell", "settings put secure credential_service null"], serial=self.serial, timeout=5)
+            _executar_adb(["shell", "settings put secure credential_service_primary null"], serial=self.serial, timeout=5)
             if not self.running or not self.manager.running: return
-            subprocess.run(f"{adb_cmd} shell appops set com.android.chrome POST_NOTIFICATION ignore", shell=True, timeout=5)
+            _executar_adb(["shell", "appops set com.android.chrome POST_NOTIFICATION ignore"], serial=self.serial, timeout=5)
             if not self.running or not self.manager.running: return
-            subprocess.run(f"{adb_cmd} shell settings put global http_proxy :0", shell=True, timeout=5)
+            _executar_adb(["shell", "settings put global http_proxy :0"], serial=self.serial, timeout=5)
             if not self.running or not self.manager.running: return
-            subprocess.run(f"{adb_cmd} shell am set-debug-app --persistent com.android.chrome", shell=True, timeout=5)
+            _executar_adb(["shell", "am set-debug-app --persistent com.android.chrome"], serial=self.serial, timeout=5)
             if not self.running or not self.manager.running: return
             chrome_flags = "chrome --disable-fre --no-first-run --no-default-browser-check --disable-save-password-bubble --disable-autofill --disable-password-generation --disable-single-click-autofill --disable-features=TouchToFillPasswords,TouchToFillPasswordSubmission,PasswordManagerOnboardingAndroid,TouchToFillPayments"
-            subprocess.run(f'{adb_cmd} shell "echo \'{chrome_flags}\' > /data/local/tmp/chrome-command-line"', shell=True, timeout=5)
+            _executar_adb(["shell", f"echo '{chrome_flags}' > /data/local/tmp/chrome-command-line"], serial=self.serial, timeout=5)
             if not self.running or not self.manager.running: return
-            subprocess.run(f'{adb_cmd} shell "chmod 777 /data/local/tmp/chrome-command-line"', shell=True, timeout=5)
+            _executar_adb(["shell", "chmod 777 /data/local/tmp/chrome-command-line"], serial=self.serial, timeout=5)
             if not self.running or not self.manager.running: return
 
             url = "https://signin.rockstargames.com/create/date-of-birth?cid=rsg&returnUrl=%2Faccount%2Fsecurity"
-            subprocess.run(f'{adb_cmd} shell am start -n com.android.chrome/com.google.android.apps.chrome.Main -d "{url}" --ez create_new_tab true --ez com.android.chrome.disable_first_run true --activity-clear-task', shell=True, timeout=10)
+            _executar_adb(["shell", f'am start -n com.android.chrome/com.google.android.apps.chrome.Main -d "{url}" --ez create_new_tab true --ez com.android.chrome.disable_first_run true --activity-clear-task'], serial=self.serial, timeout=10)
             if not self.running or not self.manager.running: return
             time.sleep(1.2)
             if not self.running or not self.manager.running: return
             dispensar_telas_iniciais_chrome(log_cb=self.log, serial=self.serial, manager=self)
             if not self.running or not self.manager.running: return
-            subprocess.run(f"{adb_cmd} forward tcp:{self.cdp_port} localabstract:chrome_devtools_remote", shell=True, timeout=5)
+            _executar_adb(["forward", f"tcp:{self.cdp_port}", "localabstract:chrome_devtools_remote"], serial=self.serial, timeout=5)
             time.sleep(0.3)
             if not self.running or not self.manager.running: return
             self.log(f"✅ Chrome Mobile pronto (CDP {self.cdp_port})!")
@@ -4066,9 +4074,8 @@ class MobileDeviceWorker:
                                 self.current_browser.close()
                         except Exception:
                             pass
-                        adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
                         try:
-                            subprocess.run(f"{adb_cmd} shell am force-stop com.android.chrome", shell=True, timeout=5)
+                            _executar_adb(["shell", "am force-stop com.android.chrome"], serial=self.serial, timeout=5)
                         except Exception:
                             pass
                         self.rotacionar_ip_4g()
@@ -4105,10 +4112,9 @@ class MobileDeviceWorker:
                             pass
                         self.current_browser = None
 
-                        adb_cmd = f"adb -s {self.serial}" if self.serial else "adb"
                         try:
-                            subprocess.run(f"{adb_cmd} shell am force-stop com.android.chrome", shell=True, timeout=5)
-                            subprocess.run(f"{adb_cmd} shell pm clear com.android.chrome", shell=True, timeout=5)
+                            _executar_adb(["shell", "am force-stop com.android.chrome"], serial=self.serial, timeout=5)
+                            _executar_adb(["shell", "pm clear com.android.chrome"], serial=self.serial, timeout=5)
                         except Exception:
                             pass
 
