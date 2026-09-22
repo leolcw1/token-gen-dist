@@ -9,6 +9,23 @@ if (Test-Path (Join-Path $PSScriptRoot "version.json")) {
     } catch {}
 }
 
+function Parse-VersionObj($vStr) {
+    try {
+        if (-not $vStr) { return New-Object System.Version(0, 0, 0, 0) }
+        $clean = ($vStr.ToString() -replace '^[vV]', '').Trim()
+        $parts = $clean.Split('.')
+        $ints = @()
+        foreach ($p in $parts) {
+            $digits = ($p -replace '\D', '')
+            if ($digits) { $ints += [int]$digits }
+        }
+        while ($ints.Count -lt 4) { $ints += 0 }
+        return New-Object System.Version($ints[0], $ints[1], $ints[2], $ints[3])
+    } catch {
+        return New-Object System.Version(0, 0, 0, 0)
+    }
+}
+
 try {
     $manifest = Invoke-RestMethod -Uri $apiUrl -Headers @{
         "Accept" = "application/vnd.github.v3.raw"
@@ -17,7 +34,11 @@ try {
     }
     $remoteVer = $manifest.version
 
-    if ($remoteVer -and ($remoteVer -ne $localVer)) {
+    $remoteParsed = Parse-VersionObj $remoteVer
+    $localParsed = Parse-VersionObj $localVer
+
+    # REGRA ESTRITA: Apenas atualiza se a versao remota for ESTRITAMENTE SUPERIOR (-gt)
+    if ($remoteVer -and ($remoteParsed -gt $localParsed)) {
         Write-Host "[UPDATE] Nova versao encontrada: v$remoteVer (Atual: v$localVer)" -ForegroundColor Cyan
         
         # Fecha qualquer instancia anterior aberta para evitar bloqueio de arquivos
@@ -43,7 +64,7 @@ try {
         Write-Host "[SUCESSO] Aplicacao atualizada para v$remoteVer com sucesso!" -ForegroundColor Green
         Write-Host "Voce ja pode abrir o PokasStoreMobile.exe ou INICIAR.bat." -ForegroundColor Green
     } else {
-        Write-Host "[INFO] A aplicacao ja esta na versao mais recente (v$localVer)." -ForegroundColor Green
+        Write-Host "[INFO] A aplicacao ja esta na versao mais recente (v$localVer). Nenhuma atualizacao pendente." -ForegroundColor Green
     }
 } catch {
     Write-Host "[ERRO] Falha ao verificar/baixar atualizacoes: $_" -ForegroundColor Red
