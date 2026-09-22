@@ -4571,8 +4571,8 @@ class MobileManager:
         self.tipo_execucao = "mobile"  # "mobile", "pc_4g" ou "pc_local"
         self.modo_email = "mhmdo"  # "mhmdo" ou "graph"
         self.mhmdo_email_type = "short"  # "short", "custom" ou "full"
-        self.meta_contas = 10
-        self.infinito = False
+        self.meta_contas = 0
+        self.infinito = True
         self.contas_criadas_sessao = 0
         self._stats_lock = threading.Lock()
         self._thread_lock = threading.Lock()
@@ -5762,7 +5762,7 @@ class MobileAutomationGUI:
         tk.Label(meta_inner, text="🎯 META DE CONTAS:", font=("Segoe UI", 8, "bold"), fg=C_TEXT_MUTED, bg=C_BG_CARD).pack(side="left", padx=(0, 8))
 
         self.qtd_var = tk.StringVar(value="10")
-        self.infinito_var = tk.BooleanVar(value=False)
+        self.infinito_var = tk.BooleanVar(value=True)
 
         def _on_infinito_toggle():
             if self.infinito_var.get():
@@ -5775,6 +5775,7 @@ class MobileAutomationGUI:
             bg=C_BG_INPUT, fg=C_GREEN, insertbackground="#FFFFFF", justify="center", bd=1, relief="solid"
         )
         self.entry_qtd.pack(side="left", padx=(0, 8))
+        self.entry_qtd.config(state="disabled")
 
         chk_inf = tk.Checkbutton(
             meta_inner, text="♾️ Infinito (sem limites)", variable=self.infinito_var,
@@ -5783,7 +5784,7 @@ class MobileAutomationGUI:
         )
         chk_inf.pack(side="left", padx=8)
 
-        self.lbl_progresso_meta = tk.Label(meta_inner, text="Progresso: 0 / 10", font=("Segoe UI", 9, "bold"), fg=C_CYAN, bg=C_BG_CARD)
+        self.lbl_progresso_meta = tk.Label(meta_inner, text="Progresso: 0 criadas (♾️)", font=("Segoe UI", 9, "bold"), fg=C_CYAN, bg=C_BG_CARD)
         self.lbl_progresso_meta.pack(side="right")
 
         # Métricas Cards
