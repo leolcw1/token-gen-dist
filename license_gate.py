@@ -5,6 +5,7 @@ import time
 import base64
 import hashlib
 import datetime
+import ctypes
 import urllib.request
 import urllib.error
 import tkinter as tk
@@ -20,6 +21,8 @@ else:
     _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 LICENSE_FILE = os.path.join(_APP_DIR, "license.lic")
+_VAULT_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "PokasStore")
+_VAULT_LICENSE_FILE = os.path.join(_VAULT_DIR, "license.vault")
 
 # URL DO SEU SERVIDOR DE LICENCAS (Cloudflare Worker)
 API_SERVER_URL = "https://pokas-auth.leolcw2.workers.dev"
@@ -89,30 +92,62 @@ def salvar_licenca_local(hwid, key_str, exp_str="", role="OPERADOR"):
         chave = _obter_chave_cifra_local(hwid)
         conteudo = f"{hwid}|{key_str.strip().upper()}|{exp_str}|{role.strip().upper()}"
         cifrado = _criptografar_dados(conteudo, chave)
-        with open(LICENSE_FILE, "w", encoding="utf-8") as f:
-            f.write(cifrado)
+
+        # 1. Salva na pasta do aplicativo
+        try:
+            with open(LICENSE_FILE, "w", encoding="utf-8") as f:
+                f.write(cifrado)
+        except Exception:
+            pass
+
+        # 2. Salva no cofre permanente do sistema (%LOCALAPPDATA%\PokasStore)
+        # Permite persistir a chave mesmo se o usuário mover a pasta, extrair novo zip ou atualizar
+        try:
+            os.makedirs(_VAULT_DIR, exist_ok=True)
+            with open(_VAULT_LICENSE_FILE, "w", encoding="utf-8") as f_v:
+                f_v.write(cifrado)
+        except Exception:
+            pass
+
         return True
     except Exception:
         return False
 
 def carregar_licenca_local(hwid):
-    if not os.path.exists(LICENSE_FILE):
-        return None, "OPERADOR"
-    try:
-        chave = _obter_chave_cifra_local(hwid)
-        with open(LICENSE_FILE, "r", encoding="utf-8") as f:
-            cifrado = f.read().strip()
-        decifrado = _descriptografar_dados(cifrado, chave)
-        if "|" in decifrado:
-            partes = decifrado.split("|")
-            hwid_salvo = partes[0]
-            key_salva = partes[1]
-            role_salvo = partes[3].strip() if len(partes) >= 4 else "OPERADOR"
-            if hwid_salvo.strip().upper() == hwid.strip().upper():
-                return key_salva.strip(), role_salvo
-    except Exception:
-        pass
+    candidatos = [LICENSE_FILE, _VAULT_LICENSE_FILE]
+    for cpath in candidatos:
+        if not os.path.exists(cpath):
+            continue
+        try:
+            chave = _obter_chave_cifra_local(hwid)
+            with open(cpath, "r", encoding="utf-8") as f:
+                cifrado = f.read().strip()
+            decifrado = _descriptografar_dados(cifrado, chave)
+            if "|" in decifrado:
+                partes = decifrado.split("|")
+                hwid_salvo = partes[0]
+                key_salva = partes[1]
+                role_salvo = partes[3].strip() if len(partes) >= 4 else "OPERADOR"
+                if hwid_salvo.strip().upper() == hwid.strip().upper():
+                    # Sincroniza de volta se o arquivo da pasta local tiver sido apagado
+                    if not os.path.exists(LICENSE_FILE):
+                        try:
+                            with open(LICENSE_FILE, "w", encoding="utf-8") as f_sync:
+                                f_sync.write(cifrado)
+                        except Exception:
+                            pass
+                    return key_salva.strip(), role_salvo
+        except Exception:
+            pass
     return None, "OPERADOR"
+
+def limpar_licenca_local():
+    for f in [LICENSE_FILE, _VAULT_LICENSE_FILE]:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except Exception:
+            pass
 
 def _obter_versao_app():
     try:
@@ -151,7 +186,7 @@ def abrir_janela_ativacao_autobind(hwid, msg_inicial=""):
     ver_str = _obter_versao_app()
     root = tk.Tk()
     root.title(f"Pokas Store v{ver_str} — Ativação de Acesso")
-    root.geometry("460x520")
+    root.geometry("460x540")
     root.resizable(False, False)
     root.configure(bg="#0B0E17")
     aplicar_tema_escuro_janela(root)
@@ -162,8 +197,8 @@ def abrir_janela_ativacao_autobind(hwid, msg_inicial=""):
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
     x = max(0, (sw - 460) // 2)
-    y = max(0, (sh - 520) // 2)
-    root.geometry(f"460x520+{x}+{y}")
+    y = max(0, (sh - 540) // 2)
+    root.geometry(f"460x540+{x}+{y}")
 
     ico_path = os.path.join(_APP_DIR, "app_icon.ico")
     if os.path.exists(ico_path):
@@ -236,13 +271,36 @@ def abrir_janela_ativacao_autobind(hwid, msg_inicial=""):
         bd=0, justify="center", insertbackground="#00E5FF"
     )
     entry_key.pack(fill="x", ipady=8)
+
+    # Pré-carrega a última chave conhecida do cofre, se houver
+    key_previa, _ = carregar_licenca_local(hwid)
+    if key_previa:
+        entry_key.insert(0, key_previa)
     entry_key.focus_set()
+
+    # Checkbox para salvar a chave e não precisar redigitar ao fechar/reabrir
+    var_salvar_key = tk.BooleanVar(value=True)
+    chk_salvar = tk.Checkbutton(
+        field_frame,
+        text=" Salvar chave neste computador (entrar automaticamente)",
+        variable=var_salvar_key,
+        font=("Segoe UI", 8, "bold"),
+        fg="#94A3B8",
+        bg="#111625",
+        activebackground="#111625",
+        activeforeground="#00E5FF",
+        selectcolor="#0B0E17",
+        bd=0,
+        highlightthickness=0,
+        cursor="hand2"
+    )
+    chk_salvar.pack(anchor="w", pady=(8, 0))
 
     lbl_feedback = tk.Label(
         card, text=msg_inicial or "", font=("Segoe UI", 8, "bold"),
         fg="#EF4444" if msg_inicial else "#64748B", bg="#111625", wraplength=380
     )
-    lbl_feedback.pack(pady=(12, 14))
+    lbl_feedback.pack(pady=(10, 12))
 
     def _ativar():
         chave_digitada = entry_key.get().strip().upper()
@@ -257,7 +315,10 @@ def abrir_janela_ativacao_autobind(hwid, msg_inicial=""):
         sucesso_online, msg_online, role_online = validar_online(chave_digitada, hwid)
 
         if sucesso_online is True:
-            salvar_licenca_local(hwid, chave_digitada, role=role_online or "OPERADOR")
+            if var_salvar_key.get():
+                salvar_licenca_local(hwid, chave_digitada, role=role_online or "OPERADOR")
+            else:
+                limpar_licenca_local()
             resultado["sucesso"] = True
             resultado["msg"] = msg_online
             resultado["role"] = role_online or "OPERADOR"
@@ -275,7 +336,10 @@ def abrir_janela_ativacao_autobind(hwid, msg_inicial=""):
                 if "-" in chave_digitada:
                     exp_str, sig = chave_digitada.split("-", 1)
                     if sig == calcular_assinatura(hwid, exp_str):
-                        salvar_licenca_local(hwid, chave_digitada, exp_str, role="OPERADOR")
+                        if var_salvar_key.get():
+                            salvar_licenca_local(hwid, chave_digitada, exp_str, role="OPERADOR")
+                        else:
+                            limpar_licenca_local()
                         resultado["sucesso"] = True
                         resultado["msg"] = "Licenca Offline Valida"
                         resultado["role"] = "OPERADOR"
