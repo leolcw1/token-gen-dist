@@ -19,7 +19,7 @@ else:
     BASE_DIR = Path(__file__).parent.resolve()
 
 LOCAL_VERSION_FILE = BASE_DIR / "version.json"
-CURRENT_FALLBACK_VERSION = "1.0.0"
+CURRENT_FALLBACK_VERSION = "1.0.53"
 
 def _get_headers() -> dict:
     headers = {
@@ -32,31 +32,67 @@ def _get_headers() -> dict:
         headers["Authorization"] = f"token {GITHUB_TOKEN}"
     return headers
 
-def get_local_version() -> str:
-    if LOCAL_VERSION_FILE.exists():
-        try:
-            with open(LOCAL_VERSION_FILE, "r", encoding="utf-8") as f:
-                return json.load(f).get("version", CURRENT_FALLBACK_VERSION)
-        except Exception:
-            pass
-    return CURRENT_FALLBACK_VERSION
-
-def set_local_version(version: str):
-    try:
-        with open(LOCAL_VERSION_FILE, "w", encoding="utf-8") as f:
-            json.dump({"version": version}, f, indent=4)
-    except Exception:
-        pass
-
 def parse_version(ver_str: str) -> tuple:
+    """
+    Converte qualquer formato de versão ('1.0.53', 'v1.0.53', ' 1.0.53\n')
+    em uma tupla numérica confiável (1, 0, 53). Imune a erros de parse.
+    """
     try:
-        return tuple(int(x) for x in ver_str.strip().split("."))
+        if not ver_str:
+            return (0,)
+        clean = str(ver_str).strip().lstrip("vV")
+        partes = []
+        for x in clean.split("."):
+            num = ""
+            for ch in x:
+                if ch.isdigit():
+                    num += ch
+                else:
+                    break
+            if num:
+                partes.append(int(num))
+        return tuple(partes) if partes else (0,)
     except Exception:
         return (0,)
 
+def get_local_version() -> str:
+    """
+    Localiza a versão local procurando em múltiplos locais possíveis e garante
+    que nunca retorne versão zerada ou antiga como fallback.
+    """
+    candidatos = [
+        LOCAL_VERSION_FILE,
+        BASE_DIR / "dist" / "PokasStoreMobile" / "version.json",
+        BASE_DIR.parent / "version.json"
+    ]
+    melhor_ver = CURRENT_FALLBACK_VERSION
+    for cand in candidatos:
+        if cand.exists():
+            try:
+                with open(cand, "r", encoding="utf-8-sig") as f:
+                    v = json.load(f).get("version", "")
+                    if v and parse_version(v) > parse_version(melhor_ver):
+                        melhor_ver = str(v).strip()
+            except Exception:
+                pass
+    return melhor_ver
+
+def set_local_version(version: str):
+    try:
+        for v_path in [LOCAL_VERSION_FILE, BASE_DIR / "dist" / "PokasStoreMobile" / "version.json"]:
+            try:
+                with open(v_path, "w", encoding="utf-8") as f:
+                    json.dump({"version": version}, f, indent=4)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 def check_for_updates() -> tuple[bool, dict]:
     """
-    Retorna (has_update: bool, remote_manifest: dict)
+    Retorna (has_update: bool, remote_manifest: dict).
+    REGRA ESTRITA: NUNCA avisa nem aplica versões menores ou iguais (passadas).
+    Somente versões ESTRITAMENTE MAIORES (futuras) são disparadas.
     """
     try:
         url = f"{GITHUB_RAW_VERSION_URL}?t={int(time.time())}"
@@ -68,7 +104,11 @@ def check_for_updates() -> tuple[bool, dict]:
         remote_version = str(remote_data.get("version", "")).strip()
         local_version = get_local_version().strip()
 
-        if remote_version and parse_version(remote_version) > parse_version(local_version):
+        parsed_remote = parse_version(remote_version)
+        parsed_local = parse_version(local_version)
+
+        # Apenas atualizações estritamente futuras
+        if remote_version and parsed_remote > parsed_local and parsed_remote != (0,):
             return True, remote_data
     except Exception:
         pass
