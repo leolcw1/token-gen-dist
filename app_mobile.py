@@ -6959,7 +6959,18 @@ class MobileAutomationGUI:
         card_inner = tk.Frame(card_border, bg=C_BG_CARD, padx=14, pady=10)
         card_inner.pack(fill="both", expand=True)
 
-        tk.Label(card_inner, text=titulo, font=("Segoe UI", 7, "bold"), fg=C_TEXT_MUTED, bg=C_BG_CARD).pack(anchor="w")
+        header_box = tk.Frame(card_inner, bg=C_BG_CARD)
+        header_box.pack(fill="x")
+
+        tk.Label(header_box, text=titulo, font=("Segoe UI", 7, "bold"), fg=C_TEXT_MUTED, bg=C_BG_CARD).pack(side="left")
+        if "ROCKSTAR" in titulo:
+            btn_res = tk.Button(
+                header_box, text="🛡️ RESTAURAR", font=("Segoe UI", 7, "bold"),
+                fg=C_CYAN, bg=C_BG_CARD_INNER, activebackground="#1E293B", activeforeground="#FFFFFF",
+                bd=0, padx=6, pady=1, cursor="hand2", command=self._acao_recuperar_backups_editor
+            )
+            btn_res.pack(side="right")
+
         lbl_val = tk.Label(card_inner, text=valor_inicial, font=("Segoe UI", 16, "bold"), fg=cor_valor, bg=C_BG_CARD)
         lbl_val.pack(anchor="w", pady=(2, 0))
         card_border.lbl_valor = lbl_val
