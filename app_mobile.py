@@ -92,6 +92,8 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONTAS_DIR = os.path.join(BASE_DIR, "contas")
 os.makedirs(CONTAS_DIR, exist_ok=True)
+CONTAS_BACKUP_DIR = os.path.join(CONTAS_DIR, "backups")
+os.makedirs(CONTAS_BACKUP_DIR, exist_ok=True)
 
 OUTLOOK_FILE = os.path.join(CONTAS_DIR, "outlook.txt")
 CRIAR_FILE = OUTLOOK_FILE  # Alias de compatibilidade
@@ -101,7 +103,10 @@ ERRO_FILE = os.path.join(CONTAS_DIR, "erro.txt")
 CODIGOS_FILE = os.path.join(CONTAS_DIR, "codigos.txt")
 PRONTAS_FILE = os.path.join(CONTAS_DIR, "prontas.txt")
 
-for fpath in [OUTLOOK_FILE, ROCKSTAR_FILE, ERRO_FILE, CODIGOS_FILE, PRONTAS_FILE]:
+ROCKSTAR_MASTER_FILE = os.path.join(CONTAS_BACKUP_DIR, "rockstar_master_all.txt")
+OUTLOOK_CONSUMED_FILE = os.path.join(CONTAS_BACKUP_DIR, "outlook_consumidos.txt")
+
+for fpath in [OUTLOOK_FILE, ROCKSTAR_FILE, ERRO_FILE, CODIGOS_FILE, PRONTAS_FILE, ROCKSTAR_MASTER_FILE, OUTLOOK_CONSUMED_FILE]:
     if not os.path.exists(fpath):
         with open(fpath, "w", encoding="utf-8") as f:
             pass
@@ -369,6 +374,7 @@ def remover_conta_criar(conta):
             return
         linhas_restantes = []
         removida = False
+        linha_removida_raw = ""
         with open(CRIAR_FILE, "r", encoding="utf-8") as f:
             todas = f.readlines()
         for linha in todas:
@@ -379,15 +385,40 @@ def remover_conta_criar(conta):
                 obj = parse_conta_linha(linha_s)
                 if obj and obj.get("email", "").strip().lower() == email_alvo:
                     removida = True
+                    linha_removida_raw = linha_s
                     continue
             linhas_restantes.append(linha)
         with open(CRIAR_FILE, "w", encoding="utf-8") as f:
             f.writelines(linhas_restantes)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+
+        # Registro imutável de e-mails consumidos (segurança para e-mails temporários)
+        if removida and linha_removida_raw:
+            try:
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                with open(OUTLOOK_CONSUMED_FILE, "a", encoding="utf-8") as f_cons:
+                    f_cons.write(f"[{ts}] {linha_removida_raw}\n")
+                    f_cons.flush()
+                    try:
+                        os.fsync(f_cons.fileno())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
 def salvar_erro(conta, motivo="Erro", log_cb=None):
     with _lock_contas:
         with open(ERRO_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(conta, ensure_ascii=False) + "\n")
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
     remover_conta_criar(conta)
     if log_cb:
         log_cb(f"❌ Conta salva em erro.txt ({motivo})")
@@ -396,11 +427,136 @@ def salvar_feita(email, senha, secret_key, log_cb=None):
     with _lock_contas:
         secret_limpa = secret_key.replace(' ', '').replace('-', '')
         linha = f"{email}:{senha}:{secret_limpa}"
+        
+        # 1. Arquivo principal rockstar.txt com flush imediato no disco físico
         with open(ROCKSTAR_FILE, "a", encoding="utf-8") as f:
             f.write(linha + "\n")
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+
+        # 2. Master imutável (histórico geral acumulado de todas as contas já feitas)
+        try:
+            with open(ROCKSTAR_MASTER_FILE, "a", encoding="utf-8") as f_master:
+                f_master.write(linha + "\n")
+                f_master.flush()
+                try:
+                    os.fsync(f_master.fileno())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 3. Backup diário separado por data (ex: rockstar_2026-09-22.txt)
+        try:
+            hoje = time.strftime("%Y-%m-%d")
+            daily_file = os.path.join(CONTAS_BACKUP_DIR, f"rockstar_{hoje}.txt")
+            with open(daily_file, "a", encoding="utf-8") as f_daily:
+                f_daily.write(linha + "\n")
+                f_daily.flush()
+                try:
+                    os.fsync(f_daily.fileno())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     if log_cb:
-        log_cb(f"✅ Salvo em rockstar.txt: {linha}")
+        log_cb(f"✅ Salvo em rockstar.txt (com cópia imutável em backups): {linha}")
     return linha
+
+def sincronizar_e_recuperar_contas_feitas(log_cb=None):
+    """
+    Varre os backups imutáveis (rockstar_master_all.txt e backups diários) e recupera
+    automaticamente qualquer conta ausente em rockstar.txt (ex: após rollback do OneDrive,
+    erro de sync, crash ou sobrescrita acidental).
+    """
+    with _lock_contas:
+        linhas_atuais = []
+        contas_existentes = set()
+        if os.path.exists(ROCKSTAR_FILE):
+            try:
+                with open(ROCKSTAR_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                    linhas_atuais = [l.strip() for l in f if l.strip()]
+                for l in linhas_atuais:
+                    p = l.split(":")[0].strip().lower()
+                    if p:
+                        contas_existentes.add(p)
+            except Exception:
+                pass
+
+        novas_recuperadas = []
+        arquivos_backup = []
+        if os.path.exists(ROCKSTAR_MASTER_FILE):
+            arquivos_backup.append(ROCKSTAR_MASTER_FILE)
+
+        if os.path.exists(CONTAS_BACKUP_DIR):
+            try:
+                for fname in sorted(os.listdir(CONTAS_BACKUP_DIR)):
+                    if fname.startswith("rockstar_") and fname.endswith(".txt"):
+                        f_full = os.path.join(CONTAS_BACKUP_DIR, fname)
+                        if f_full not in arquivos_backup:
+                            arquivos_backup.append(f_full)
+            except Exception:
+                pass
+
+        for bfile in arquivos_backup:
+            try:
+                with open(bfile, "r", encoding="utf-8", errors="ignore") as f:
+                    for l in f:
+                        l_clean = l.strip()
+                        if not l_clean or l_clean.startswith("#"):
+                            continue
+                        email = l_clean.split(":")[0].strip().lower()
+                        if email and email not in contas_existentes:
+                            contas_existentes.add(email)
+                            novas_recuperadas.append(l_clean)
+            except Exception:
+                pass
+
+        if novas_recuperadas:
+            try:
+                with open(ROCKSTAR_FILE, "a", encoding="utf-8") as f:
+                    for n in novas_recuperadas:
+                        f.write(n + "\n")
+                    f.flush()
+                    try: os.fsync(f.fileno())
+                    except Exception: pass
+            except Exception:
+                pass
+
+            try:
+                with open(ROCKSTAR_MASTER_FILE, "a", encoding="utf-8") as f_m:
+                    for n in novas_recuperadas:
+                        f_m.write(n + "\n")
+                    f_m.flush()
+                    try: os.fsync(f_m.fileno())
+                    except Exception: pass
+            except Exception:
+                pass
+
+            msg = f"🛡️ RECUPERAÇÃO ATIVA: {len(novas_recuperadas)} contas restauradas dos backups para rockstar.txt!"
+            if log_cb:
+                log_cb(msg)
+            return len(novas_recuperadas)
+
+        # Se o master estiver vazio ou com menos contas que o rockstar atual, popula o master como baseline
+        if os.path.exists(ROCKSTAR_FILE) and os.path.exists(ROCKSTAR_MASTER_FILE) and linhas_atuais:
+            try:
+                with open(ROCKSTAR_MASTER_FILE, "r", encoding="utf-8", errors="ignore") as f_m:
+                    m_emails = {l.split(":")[0].strip().lower() for l in f_m if l.strip() and not l.startswith("#")}
+                faltando_no_master = [l for l in linhas_atuais if l.split(":")[0].strip().lower() not in m_emails]
+                if faltando_no_master:
+                    with open(ROCKSTAR_MASTER_FILE, "a", encoding="utf-8") as f_m:
+                        for l in faltando_no_master:
+                            f_m.write(l + "\n")
+                        f_m.flush()
+            except Exception:
+                pass
+
+        return 0
 
 _cache_contagem = {}
 
@@ -4894,6 +5050,15 @@ class MobileAutomationGUI:
 
         self._configurar_estilos()
         self._construir_interface()
+
+        # Recuperação e verificação automática de contas perdidas a partir de backups imutáveis
+        try:
+            recup = sincronizar_e_recuperar_contas_feitas(log_cb=self.adicionar_log)
+            if recup > 0:
+                self.adicionar_log(f"🛡️ AUTO-RECUPERAÇÃO: {recup} contas foram restauradas com sucesso dos backups imutáveis!")
+        except Exception:
+            pass
+
         self.atualizar_contadores()
         self._iniciar_loop_tempo_real()
         self._iniciar_watchdog_licenca()
@@ -6110,6 +6275,7 @@ class MobileAutomationGUI:
         actions_frame = tk.Frame(bot_bar, bg=C_BG_CARD)
         actions_frame.pack(side="right")
 
+        ttk.Button(actions_frame, text="🛡️ RESTAURAR BACKUP", style="Secondary.TButton", command=self._acao_recuperar_backups_editor).pack(side="left", padx=3)
         ttk.Button(actions_frame, text="🧹 LIMPAR", style="Secondary.TButton", command=self._acao_limpar_editor).pack(side="left", padx=3)
         ttk.Button(actions_frame, text="📋 COPIAR TUDO", style="Secondary.TButton", command=self._acao_copiar_editor).pack(side="left", padx=3)
         ttk.Button(actions_frame, text="🔄 RECARREGAR", style="Secondary.TButton", command=self._carregar_arquivo_no_editor).pack(side="left", padx=3)
@@ -6164,14 +6330,59 @@ class MobileAutomationGUI:
         caminho = self._obter_caminho_arquivo_ativo()
         conteudo = self.txt_editor.get("1.0", tk.END).strip()
         try:
+            # 1. Proteção contra perda de dados em arquivos críticos
+            if os.path.exists(caminho):
+                with open(caminho, "r", encoding="utf-8", errors="ignore") as f_prev:
+                    conteudo_disco = f_prev.read()
+                linhas_disco = [l for l in conteudo_disco.splitlines() if l.strip() and not l.startswith("#")]
+                linhas_editor = [l for l in conteudo.splitlines() if l.strip() and not l.startswith("#")]
+
+                if caminho in (ROCKSTAR_FILE, OUTLOOK_FILE) and len(linhas_disco) > len(linhas_editor):
+                    nome_f = os.path.basename(caminho)
+                    perda = len(linhas_disco) - len(linhas_editor)
+                    alerta = (
+                        f"⚠️ ALERTA DE PERDA DE DADOS ({nome_f}):\n\n"
+                        f"O arquivo salvo em disco tem {len(linhas_disco)} registros, "
+                        f"mas o editor tem apenas {len(linhas_editor)} ({perda} a menos)!\n\n"
+                        f"Salvar agora pode apagar contas geradas pelo bot.\n"
+                        f"Deseja realmente sobrescrever?"
+                    )
+                    if not messagebox.askyesno("Confirmar Salvamento", alerta, parent=self.root):
+                        self.lbl_file_status_badge.config(text="Operação cancelada para proteger dados.", fg=C_AMBER)
+                        return
+
+                # Snapshot de segurança na pasta backups antes de gravar
+                try:
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    base_n = os.path.basename(caminho).replace(".txt", "")
+                    snap_name = f"{base_n}_pre_save_{ts}.txt"
+                    with open(os.path.join(CONTAS_BACKUP_DIR, snap_name), "w", encoding="utf-8") as f_snap:
+                        f_snap.write(conteudo_disco)
+                except Exception:
+                    pass
+
             with open(caminho, "w", encoding="utf-8") as f:
                 f.write(conteudo + ("\n" if conteudo else ""))
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
             linhas = len([l for l in conteudo.splitlines() if l.strip() and not l.startswith("#")])
             self.lbl_file_status_badge.config(text=f"✅ Salvo com sucesso! ({linhas} registros)", fg=C_GREEN)
             self.lbl_file_info.config(text=f"Arquivo: {os.path.basename(caminho)} | {linhas} registros salvos")
             self.atualizar_contadores()
         except Exception as e:
             self.lbl_file_status_badge.config(text=f"❌ Erro ao salvar: {e}", fg=C_RED)
+
+    def _acao_recuperar_backups_editor(self):
+        recup = sincronizar_e_recuperar_contas_feitas(log_cb=self.adicionar_log)
+        self.atualizar_contadores()
+        self._carregar_arquivo_no_editor()
+        if recup > 0:
+            messagebox.showinfo("Recuperação de Contas", f"✅ Sucesso!\n\nForam restauradas {recup} contas a partir dos backups imutáveis para rockstar.txt!", parent=self.root)
+        else:
+            messagebox.showinfo("Recuperação de Contas", "ℹ️ Todas as contas dos backups já constam em rockstar.txt.\nNenhuma conta faltante encontrada.", parent=self.root)
 
     def _acao_copiar_editor(self):
         conteudo = self.txt_editor.get("1.0", tk.END).strip()
