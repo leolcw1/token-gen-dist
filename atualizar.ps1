@@ -52,6 +52,13 @@ try {
         foreach ($prop in $manifest.files.PSObject.Properties) {
             $fname = [string]$prop.Name
             $furl = [string]$prop.Value
+
+            # REGRA INVIOLAVEL: NUNCA tocar em arquivos .txt ou diretorios de contas/backups
+            $fLower = $fname.ToLower()
+            if ($fLower.EndsWith(".txt") -or $fLower.EndsWith(".lic") -or $fLower.EndsWith(".key") -or $fLower.EndsWith(".vault") -or $fLower.Contains("contas") -or $fLower.Contains("backup")) {
+                continue
+            }
+
             Write-Host "  -> Baixando: $fname" -ForegroundColor Gray
             $outPath = Join-Path $PSScriptRoot $fname
             $webClient.DownloadFile($furl, $outPath)
