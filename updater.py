@@ -123,9 +123,17 @@ def apply_update(remote_data: dict) -> bool:
     if not files:
         return False
 
+    PROTECTED_EXTENSIONS = (".txt", ".lic", ".key", ".vault", ".log")
+    PROTECTED_KEYWORDS = ("contas", "backup")
+
     temp_files = []
     try:
         for filename, url in files.items():
+            f_lower = str(filename).lower().replace("/", "\\")
+            # REGRA INVIOLÁVEL: NUNCA tocar em arquivos .txt ou diretórios de dados/contas/backups
+            if any(f_lower.endswith(ext) for ext in PROTECTED_EXTENSIONS) or any(k in f_lower for k in PROTECTED_KEYWORDS):
+                continue
+
             cache_bust_url = f"{url}?t={int(time.time())}"
             resp = requests.get(cache_bust_url, headers=_get_headers(), timeout=30)
             if resp.status_code != 200:
